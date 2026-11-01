@@ -1,0 +1,2 @@
+ModelBridge attachment test fixture.
+If this text reaches the model context, the expected marker is MB-ATTACHMENT-OK.
