@@ -16,6 +16,7 @@ import {
   normalizeProvider,
   parseLegacyApiText,
   publicProvider,
+  readResponseText,
   sanitizeMessageContent,
   trustedHost,
   trustedOrigin,
@@ -100,6 +101,18 @@ test("sanitizes and limits remote model IDs", () => {
   assert.equal(ids.some(id => id.length > 300), false);
 });
 
+test("reads upstream bodies with a strict byte limit", async () => {
+  assert.equal(await readResponseText(new Response("hello"), 5, "测试响应"), "hello");
+  await assert.rejects(
+    readResponseText(new Response("你好", {headers: {"Content-Length": "2"}}), 5, "测试响应"),
+    /测试响应超过 5 字节限制/
+  );
+  await assert.rejects(
+    readResponseText(new Response("small", {headers: {"Content-Length": "100"}}), 5, "测试响应"),
+    /测试响应超过 5 字节限制/
+  );
+});
+
 test("describes conservative model input capabilities", () => {
   const kimi = modelCapabilities("kimi/kimi-k3", {presetId: "aliyun-bailian"});
   assert.equal(kimi.chat, true);
@@ -169,6 +182,14 @@ test("detects optional parameters rejected by compatible model APIs", () => {
   assert.equal(unsupportedOptionalParameter("top_p must be 0.95", payload), "top_p");
   assert.equal(unsupportedOptionalParameter("authentication failed", payload), "");
   assert.equal(unsupportedOptionalParameter("reasoning_effort is unsupported", payload), "");
+  assert.equal(
+    unsupportedOptionalParameter("max_tokens is deprecated; use max_completion_tokens instead", payload),
+    "max_tokens"
+  );
+  assert.equal(
+    unsupportedOptionalParameter("max_completion_tokens is not supported", {max_completion_tokens: 4096}),
+    "max_completion_tokens"
+  );
 });
 
 test("preemptively omits fixed Kimi K3 sampling parameters", () => {

@@ -13,11 +13,13 @@
 - 自定义 OpenAI-compatible Base URL
 - 支持 Bearer、`x-api-key`、`api-key`、自定义认证头和无认证模式
 - 自动读取 `/models`，也可手动维护模型 ID
-- 流式聊天、停止生成、推理内容折叠、安全 Markdown 渲染
+- 标准 SSE 流式聊天、按钮或 `Esc` 停止生成、推理内容折叠、安全 Markdown 渲染
 - 一键复制回答：Word/邮件保留富文本格式，文本编辑器保留原始 Markdown；代码块可单独复制
+- 对话可导出为 JSON/Markdown，并可从 ModelBridge JSON 备份恢复
 - 图片、PDF、Word（DOCX）、文本和代码附件，支持选择文件与拖放
 - 系统提示词、温度、Top P、最大 Token 和推理强度设置
 - 模型拒绝不支持的可选参数时自动兼容重试，并记住该模型的限制
+- 自动兼容新版 `max_completion_tokens` 与常见兼容端点的 `max_tokens`
 - Token 用量统计：记录每次及累计输入、输出、缓存和总 Token
 - 模型能力自动适配中心：合并平台目录、内置规则、名称推断和用户覆盖
 - 自动识别旧版后台与端口占用，避免浏览器误连过期进程
@@ -113,6 +115,12 @@ node server.mjs
 
 每条消息右上角的“复制”按钮始终可见。复制助手回答时，剪贴板会同时写入原始 Markdown 和渲染后的 HTML：粘贴到 Word、邮件等富文本软件时保留标题、列表和表格；粘贴到记事本、VS Code、Obsidian 等纯文本编辑器时得到原始 Markdown。每个代码块右上角还提供“复制代码”。不支持多格式剪贴板的旧浏览器会自动回退为复制原始 Markdown。
 
+## 流式响应与对话备份
+
+流式响应使用标准 SSE 事件解析，能处理跨网络分块、BOM、注释、`CR`/`LF`/`CRLF` 换行以及多行 `data`。生成中可点击停止按钮；没有弹窗打开时，也可按 `Esc` 中止上游请求并保留已经收到的内容。
+
+聊天设置中的“对话数据”可导出 JSON 备份或便于阅读的 Markdown。JSON 可重新导入并恢复消息；导入会在确认后替换当前对话。导出仅包含对话文本、模型/平台标识、部分生成参数和附件元数据，**不会包含 API Key、附加请求头或图片/PDF 等附件二进制内容**。恢复后如需继续分析附件，必须重新添加原文件。
+
 ## 本地配置
 
 网页保存的平台配置位于：
@@ -147,11 +155,14 @@ $env:AI_AUTH_MODE = "none"
 - API Key 不通过 `/api/state` 返回给浏览器；界面只能看到末四位提示。
 - 附件由浏览器读取，并通过本机后端直接发送到当前所选模型平台，不会写入项目目录。
 - 远程 Base URL 强制使用 HTTPS；HTTP 只允许 localhost。
+- 上游请求禁止自动重定向，避免认证信息跟随跳转；模型目录、错误、连接测试和非流式响应均有大小上限，聊天流连续 5 分钟没有数据会中止。
 - 本机配置通过临时文件与原子替换写入 `config.local.json`，降低断电或多进程写入导致配置损坏的风险。
 - 后端校验本机 Host 与 Origin，拒绝其他网站通过本机接口读取或修改配置。
 - 附加请求头不能覆盖认证头、Cookie、Host 或 Content-Length。
 
 `config.local.json` 中的 API Key 仍是本机明文数据。Unix 系统会尝试设置 `0600`；Windows 的 Node.js 文件权限不能完整区分所有者、组和其他用户，因此不要把本机账户共享给不受信任的人。请勿把 `config.local.json`、`api.txt` 或 `.env` 提交到 Git。如果密钥曾经进入 Git 历史，仅添加 `.gitignore` 并不能移除它，应立即去平台控制台轮换密钥。
+
+自定义 Base URL 是本机操作者的信任边界：后端会访问你保存且本机可达的 HTTPS 地址，不提供通用 DNS/IP 沙箱。只添加你信任的平台，也不要允许不可信用户修改平台配置。
 
 为避免长论文和多轮对话超过模型上下文，后端会保留系统提示、最近消息及最新问题，并在文本上下文超过安全预算时省略较早内容；界面会明确提示发生了截断。
 
@@ -181,6 +192,8 @@ npm start
 │   ├── docx.js            # DOCX 本地解压与文字提取
 │   ├── usage.js           # Token 用量标准化与汇总
 │   ├── markdown.js        # 安全 Markdown 渲染
+│   ├── sse.js             # 标准 SSE 流解析与响应增量提取
+│   ├── conversation.js    # 对话导入、导出与格式校验
 │   └── app.js             # 前端状态、配置与聊天逻辑
 ├── test/                  # 配置、安全与 DOCX 解析测试
 ├── config.example.json    # 无真实密钥的配置示例
@@ -204,7 +217,7 @@ git status --short
 git check-ignore api.txt config.local.json
 ```
 
-确保输出中没有真实 Key。建议启用 GitHub Secret Scanning，并在仓库说明中明确要求用户使用自己的 API Key。
+确保输出中没有真实 Key。首次推送到 GitHub 后，建议在仓库设置中启用 [Secret Scanning 与 Push Protection](https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning)、[CodeQL 默认设置](https://docs.github.com/en/code-security/code-scanning/enabling-code-scanning/configuring-default-setup-for-code-scanning)，并为 `main` 配置[分支保护或 Ruleset](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches)，要求 CI 通过并禁止 force push。
 
 ## License
 

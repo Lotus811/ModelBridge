@@ -7,14 +7,24 @@ import {fileURLToPath} from "node:url";
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(ROOT, "config.local.json");
 const LEGACY_CONFIG_PATH = path.join(ROOT, "api.txt");
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.8.0";
 const CONFIG_VERSION = 1;
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_CONTEXT_TEXT_CHARS = 240_000;
-const OPTIONAL_CHAT_PARAMETERS = Object.freeze(["temperature", "top_p", "max_tokens", "reasoning_effort", "stream_options"]);
+const MAX_MODEL_LIST_BYTES = 2 * 1024 * 1024;
+const MAX_MODEL_CATALOG_BYTES = 4 * 1024 * 1024;
+const MAX_MODEL_CATALOG_ENTRIES = 1_000;
+const MAX_REMOTE_ERROR_BYTES = 64 * 1024;
+const MAX_NON_STREAM_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_PROBE_RESPONSE_BYTES = 1024 * 1024;
+const CHAT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const OPTIONAL_CHAT_PARAMETERS = Object.freeze(["temperature", "top_p", "max_tokens", "max_completion_tokens", "reasoning_effort", "stream_options"]);
 const modelCompatibilityCache = new Map();
 const modelCatalogCache = new Map();
+const remoteModelsCache = new Map();
+const MODEL_CATALOG_PROFILE = Symbol("modelCatalogProfile");
 const MODEL_CATALOG_TTL_MS = 10 * 60 * 1000;
+const REMOTE_MODELS_TTL_MS = 5 * 60 * 1000;
 
 export const PROVIDER_PRESETS = Object.freeze([
   {
@@ -373,6 +383,7 @@ function knownModelProfile(modelId, provider) {
 
 function catalogProfile(entry) {
   if (!entry) return {};
+  if (entry[MODEL_CATALOG_PROFILE]) return entry[MODEL_CATALOG_PROFILE];
   const requestModalities = entry.inference_metadata?.request_modality || entry.inferenceMetadata?.requestModality || [];
   const features = (entry.features || []).map(item => String(item).toLowerCase());
   const capabilities = (entry.capabilities || []).map(item => String(item).toLowerCase());
@@ -456,7 +467,7 @@ export function endpointUrl(provider, endpointPath) {
 
 export function unsupportedOptionalParameter(message, payload = {}) {
   const text = String(message || "").toLowerCase();
-  const rejected = /not supported|unsupported|does not support|unknown parameter|unrecognized parameter|not allowed|invalid value|must be|only (?:supports?|accepts?)|不支持|未知参数|无效参数|必须为|仅支持|只能/.test(text);
+  const rejected = /not supported|unsupported|does not support|unknown parameter|unrecognized parameter|not allowed|invalid value|must be|only (?:supports?|accepts?)|deprecated|incompatible|use .+ instead|不支持|未知参数|无效参数|必须为|仅支持|只能|已弃用|不兼容|请改用/.test(text);
   if (!rejected) return "";
   return OPTIONAL_CHAT_PARAMETERS.find(parameter =>
     Object.prototype.hasOwnProperty.call(payload, parameter) && text.includes(parameter)
@@ -483,6 +494,14 @@ function rememberUnsupportedParameter(provider, model, parameter) {
   modelCompatibilityCache.set(key, parameters);
 }
 
+function preferredOutputTokenParameter(provider, unsupported = new Set()) {
+  const preferred = provider.presetId === "openai" ? "max_completion_tokens" : "max_tokens";
+  const fallback = preferred === "max_tokens" ? "max_completion_tokens" : "max_tokens";
+  if (!unsupported.has(preferred)) return preferred;
+  if (!unsupported.has(fallback)) return fallback;
+  return "";
+}
+
 function buildHeaders(provider) {
   const headers = {
     Accept: "application/json, text/event-stream",
@@ -500,8 +519,49 @@ async function remoteFetch(provider, endpointPath, options = {}) {
   return fetch(endpointUrl(provider, endpointPath), {
     ...options,
     headers: {...buildHeaders(provider), ...(options.headers || {})},
-    signal: options.signal || AbortSignal.timeout(300_000)
+    signal: options.signal || AbortSignal.timeout(300_000),
+    redirect: "error"
   });
+}
+
+export async function readResponseText(response, maxBytes, label = "上游响应", onChunk = null) {
+  const limit = Number(maxBytes);
+  if (!Number.isInteger(limit) || limit < 1) throw new Error("响应大小限制无效");
+  const declared = Number(response.headers?.get?.("content-length"));
+  if (Number.isFinite(declared) && declared > limit) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error(`${label}超过 ${limit} 字节限制`);
+  }
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel().catch(() => {});
+        throw new Error(`${label}超过 ${limit} 字节限制`);
+      }
+      chunks.push(Buffer.from(value));
+      onChunk?.();
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total).toString("utf8");
+}
+
+async function readResponseJson(response, maxBytes, label, onChunk = null) {
+  const raw = await readResponseText(response, maxBytes, label, onChunk);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error(`${label}不是有效 JSON`);
+  }
 }
 
 function emptyConfig() {
@@ -644,8 +704,14 @@ export function extractModelIds(data) {
   return ids;
 }
 
-async function readRemoteError(response, provider) {
-  const raw = (await response.text().catch(() => "")).slice(0, 4000);
+async function readRemoteError(response, provider, onChunk = null) {
+  let raw = "";
+  try {
+    raw = await readResponseText(response, MAX_REMOTE_ERROR_BYTES, "模型平台错误响应", onChunk);
+  } catch (error) {
+    raw = error.message;
+  }
+  raw = raw.slice(0, 4000);
   let detail = raw;
   try {
     const parsed = JSON.parse(raw);
@@ -667,12 +733,30 @@ async function readRemoteError(response, provider) {
   return new Error(`${friendly}（HTTP ${response.status}）${detail ? `：${detail}` : ""}`);
 }
 
-async function fetchRemoteModels(provider) {
+function remoteModelsCacheKey(provider) {
+  const authFingerprint = crypto.createHash("sha256")
+    .update(JSON.stringify([provider.authMode, provider.authScheme, provider.apiKeyHeader, provider.apiKey, provider.extraHeaders]))
+    .digest("base64url")
+    .slice(0, 16);
+  return `${provider.id}\u0000${provider.baseUrl}\u0000${provider.modelsPath}\u0000${authFingerprint}`;
+}
+
+function cachedRemoteModels(provider, freshOnly = false) {
+  const cached = remoteModelsCache.get(remoteModelsCacheKey(provider));
+  if (!cached || freshOnly && Date.now() - cached.at >= REMOTE_MODELS_TTL_MS) return null;
+  return cached.ids;
+}
+
+async function fetchRemoteModels(provider, {cache = true} = {}) {
   const response = await remoteFetch(provider, provider.modelsPath, {method: "GET", signal: AbortSignal.timeout(30_000)});
   if (!response.ok) throw await readRemoteError(response, provider);
-  const data = await response.json().catch(() => ({}));
+  const data = await readResponseJson(response, MAX_MODEL_LIST_BYTES, "模型列表响应");
   const ids = extractModelIds(data);
   if (!ids.length) throw new Error("平台返回了空模型列表；可以改用手动模型模式");
+  if (cache) {
+    remoteModelsCache.set(remoteModelsCacheKey(provider), {at: Date.now(), ids});
+    if (remoteModelsCache.size > 50) remoteModelsCache.delete(remoteModelsCache.keys().next().value);
+  }
   return ids;
 }
 
@@ -689,27 +773,35 @@ async function fetchAliyunModelCatalog(provider) {
   const cached = modelCatalogCache.get(cacheKey);
   if (cached && Date.now() - cached.at < MODEL_CATALOG_TTL_MS) return cached.models;
 
-  const entries = [];
+  const models = new Map();
+  let entryCount = 0;
+  let totalBytes = 0;
   for (let pageNo = 1; pageNo <= 10; pageNo += 1) {
     const response = await fetch(aliyunCatalogUrl(provider, pageNo), {
       method: "GET",
       headers: buildHeaders(provider),
-      signal: AbortSignal.timeout(30_000)
+      signal: AbortSignal.timeout(30_000),
+      redirect: "error"
     });
     if (!response.ok) throw await readRemoteError(response, provider);
-    const data = await response.json().catch(() => ({}));
+    const raw = await readResponseText(response, MAX_MODEL_LIST_BYTES, "阿里云模型目录响应");
+    totalBytes += Buffer.byteLength(raw);
+    if (totalBytes > MAX_MODEL_CATALOG_BYTES) throw new Error("阿里云模型目录累计响应过大");
+    let data;
+    try { data = JSON.parse(raw); }
+    catch { throw new Error("阿里云模型目录响应不是有效 JSON"); }
     const page = Array.isArray(data?.output?.models) ? data.output.models : [];
-    entries.push(...page);
-    const total = Number(data?.output?.total || entries.length);
-    if (!page.length || entries.length >= total) break;
-  }
-
-  const models = new Map();
-  for (const entry of entries) {
-    const id = asText(entry.model || entry.id || entry.name, 300);
-    if (!id) continue;
-    models.set(id.toLowerCase(), entry);
-    models.set(id.toLowerCase().split("/").at(-1), entry);
+    for (const entry of page) {
+      if (entryCount >= MAX_MODEL_CATALOG_ENTRIES) throw new Error("阿里云模型目录条目过多");
+      entryCount += 1;
+      const id = asText(entry?.model || entry?.id || entry?.name, 300);
+      if (!id) continue;
+      const compact = {[MODEL_CATALOG_PROFILE]: catalogProfile(entry)};
+      models.set(id.toLowerCase(), compact);
+      models.set(id.toLowerCase().split("/").at(-1), compact);
+    }
+    const total = Number(data?.output?.total || entryCount);
+    if (!page.length || entryCount >= total) break;
   }
   modelCatalogCache.set(cacheKey, {at: Date.now(), models});
   if (modelCatalogCache.size > 50) modelCatalogCache.delete(modelCatalogCache.keys().next().value);
@@ -754,14 +846,27 @@ async function loadModels(provider) {
     source = "manual";
     warning = "当前使用手动模型列表";
   } else {
-    try {
-      ids = await fetchRemoteModels(provider);
-      source = "remote";
-    } catch (error) {
-      if (!provider.manualModels.length) throw error;
-      ids = provider.manualModels;
-      source = "fallback";
-      warning = `自动读取失败，已使用备用列表：${error.message}`;
+    const fresh = cachedRemoteModels(provider, true);
+    if (fresh) {
+      ids = fresh;
+      source = "cache";
+    } else {
+      try {
+        ids = await fetchRemoteModels(provider);
+        source = "remote";
+      } catch (error) {
+        const stale = cachedRemoteModels(provider);
+        if (stale) {
+          ids = stale;
+          source = "stale-cache";
+          warning = `自动读取失败，已使用上次成功的模型列表：${error.message}`;
+        } else {
+          if (!provider.manualModels.length) throw error;
+          ids = provider.manualModels;
+          source = "fallback";
+          warning = `自动读取失败，已使用备用列表：${error.message}`;
+        }
+      }
     }
   }
   let catalog = new Map();
@@ -771,26 +876,40 @@ async function loadModels(provider) {
 }
 
 async function probeProvider(provider) {
-  const ids = provider.modelsMode === "auto" ? await fetchRemoteModels(provider) : provider.manualModels;
+  const ids = provider.modelsMode === "auto" ? await fetchRemoteModels(provider, {cache: false}) : provider.manualModels;
   const model = provider.defaultModel || ids.find(id => modelCapabilities(id, provider).chat) || ids[0];
   if (!model) throw new Error("没有可以用于实际调用测试的模型");
   const probeMaxTokens = effectiveMaxTokens(model, modelProfile(model, provider), isKimiK3ReasoningModel(model) ? 64 : 16);
   const payload = {
     model,
     messages: [{role: "user", content: "Reply with OK."}],
-    max_tokens: probeMaxTokens,
     stream: true
   };
+  const rejectedParameters = new Set(modelCompatibilityCache.get(compatibilityKey(provider, model)) || []);
+  const initialOutputTokenParameter = preferredOutputTokenParameter(provider, rejectedParameters);
+  if (initialOutputTokenParameter) payload[initialOutputTokenParameter] = probeMaxTokens;
   if (isKimiK3ReasoningModel(model)) payload.reasoning_effort = "max";
-  const response = await remoteFetch(provider, provider.chatPath, {
-    method: "POST",
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(60_000)
-  });
-  if (!response.ok) throw await readRemoteError(response, provider);
+  let response;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    response = await remoteFetch(provider, provider.chatPath, {
+      method: "POST",
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(60_000)
+    });
+    if (response.ok) break;
+    const error = await readRemoteError(response, provider);
+    const unsupported = [400, 422].includes(response.status) ? unsupportedOptionalParameter(error.message, payload) : "";
+    if (!["max_tokens", "max_completion_tokens"].includes(unsupported)) throw error;
+    delete payload[unsupported];
+    rejectedParameters.add(unsupported);
+    rememberUnsupportedParameter(provider, model, unsupported);
+    const alternate = preferredOutputTokenParameter(provider, rejectedParameters);
+    if (alternate) payload[alternate] = probeMaxTokens;
+  }
+  if (!response?.ok) throw new Error("模型不接受连接测试使用的输出 Token 参数");
   const contentType = response.headers.get("content-type") || "";
   if (contentType.includes("text/event-stream")) {
-    const raw = (await response.text()).slice(0, 200_000);
+    const raw = await readResponseText(response, MAX_PROBE_RESPONSE_BYTES, "连接测试响应");
     const validChunk = raw.split(/\r?\n/).some(line => {
       if (!line.startsWith("data:")) return false;
       const value = line.slice(5).trim();
@@ -800,7 +919,7 @@ async function probeProvider(provider) {
     });
     if (!validChunk) throw new Error("平台已响应，但流式返回格式不是 OpenAI Chat Completions SSE");
   } else {
-    const data = await response.json().catch(() => ({}));
+    const data = await readResponseJson(response, MAX_NON_STREAM_RESPONSE_BYTES, "连接测试响应");
     if (!data?.choices?.length) throw new Error("平台已响应，但返回格式不是 OpenAI Chat Completions");
   }
   return {
@@ -972,7 +1091,7 @@ async function writeResponseChunk(res, chunk) {
   return !res.destroyed;
 }
 
-async function handleChat(req, res, config) {
+async function handleChat(req, res, config, idleTimeoutMs = CHAT_IDLE_TIMEOUT_MS) {
   let data;
   try { data = await readJson(req); }
   catch (error) { return sendJson(res, 400, {error: {message: error.message}}); }
@@ -1003,17 +1122,23 @@ async function handleChat(req, res, config) {
   try { validateModelAttachments(provider, model, messages, profile); }
   catch (error) { return sendJson(res, 400, {error: {message: error.message}}); }
 
+  const compatibilityCacheKey = compatibilityKey(provider, model);
+  const cachedUnsupported = modelCompatibilityCache.get(compatibilityCacheKey) || new Set();
+  const rejectedParameters = new Set(cachedUnsupported);
+  const omittedParameters = [];
+  const adaptedParameters = [];
   const payload = {model, messages, stream: true};
   if (typeof data.temperature === "number") payload.temperature = Math.max(0, Math.min(2, data.temperature));
   if (typeof data.top_p === "number") payload.top_p = Math.max(0, Math.min(1, data.top_p));
-  if (Number.isInteger(data.max_tokens)) payload.max_tokens = adaptedMaxTokens;
+  if (Number.isInteger(data.max_tokens)) {
+    const outputTokenParameter = preferredOutputTokenParameter(provider, cachedUnsupported);
+    if (outputTokenParameter) payload[outputTokenParameter] = adaptedMaxTokens;
+  }
   if (["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(data.reasoning_effort)) payload.reasoning_effort = data.reasoning_effort;
   if (["aliyun-bailian", "openai", "deepseek", "openrouter", "siliconflow"].includes(provider.presetId)) {
     payload.stream_options = {include_usage: true};
   }
 
-  const omittedParameters = [];
-  const adaptedParameters = [];
   if (profile.temperatureMode === "unsupported" && Object.hasOwn(payload, "temperature")) {
     delete payload.temperature;
     omittedParameters.push("temperature");
@@ -1044,7 +1169,6 @@ async function handleChat(req, res, config) {
       omittedParameters.push(parameter);
     }
   }
-  const cachedUnsupported = modelCompatibilityCache.get(compatibilityKey(provider, model)) || new Set();
   for (const parameter of cachedUnsupported) {
     if (Object.prototype.hasOwnProperty.call(payload, parameter)) {
       delete payload[parameter];
@@ -1054,15 +1178,20 @@ async function handleChat(req, res, config) {
 
   const upstreamController = new AbortController();
   let timedOut = false;
+  let timeout;
   const abortUpstream = () => {
     if (!upstreamController.signal.aborted) upstreamController.abort();
   };
+  const resetIdleTimeout = () => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => {
+      timedOut = true;
+      abortUpstream();
+    }, idleTimeoutMs);
+  };
   req.once("aborted", abortUpstream);
   res.once("close", abortUpstream);
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    abortUpstream();
-  }, 300_000);
+  resetIdleTimeout();
 
   let response;
   for (let attempt = 0; attempt <= OPTIONAL_CHAT_PARAMETERS.length; attempt += 1) {
@@ -1072,16 +1201,22 @@ async function handleChat(req, res, config) {
         body: JSON.stringify(payload),
         signal: upstreamController.signal
       });
+      resetIdleTimeout();
     } catch (error) {
       clearTimeout(timeout);
       req.off("aborted", abortUpstream);
       if (res.destroyed || upstreamController.signal.aborted && !timedOut) return;
-      return sendJson(res, timedOut ? 504 : 502, {error: {message: timedOut ? "模型响应超时（5 分钟）" : `无法连接模型平台：${error.message}`}});
+      return sendJson(res, timedOut ? 504 : 502, {error: {message: timedOut ? "模型平台长时间没有返回数据" : `无法连接模型平台：${error.message}`}});
     }
     if (response.ok) break;
 
     const status = response.status;
-    const error = await readRemoteError(response, provider);
+    const error = await readRemoteError(response, provider, resetIdleTimeout);
+    if (timedOut) {
+      clearTimeout(timeout);
+      req.off("aborted", abortUpstream);
+      return sendJson(res, 504, {error: {message: "模型平台长时间没有返回数据"}});
+    }
     const unsupported = [400, 422].includes(status) ? unsupportedOptionalParameter(error.message, payload) : "";
     if (!unsupported) {
       clearTimeout(timeout);
@@ -1091,13 +1226,27 @@ async function handleChat(req, res, config) {
 
     delete payload[unsupported];
     rememberUnsupportedParameter(provider, model, unsupported);
-    omittedParameters.push(unsupported);
+    rejectedParameters.add(unsupported);
+    if (["max_tokens", "max_completion_tokens"].includes(unsupported)) {
+      const alternate = unsupported === "max_tokens" ? "max_completion_tokens" : "max_tokens";
+      if (!rejectedParameters.has(alternate)) payload[alternate] = adaptedMaxTokens;
+    } else {
+      omittedParameters.push(unsupported);
+    }
   }
 
   if (!response?.ok) {
     clearTimeout(timeout);
     req.off("aborted", abortUpstream);
     return sendJson(res, 400, {error: {message: "模型不接受当前可选参数，自动兼容重试仍未成功"}});
+  }
+
+  if (Number.isInteger(data.max_tokens)) {
+    if (Object.hasOwn(payload, "max_completion_tokens")) {
+      adaptedParameters.push("max_tokens->max_completion_tokens");
+    } else if (!Object.hasOwn(payload, "max_tokens")) {
+      omittedParameters.push("max_tokens");
+    }
   }
 
   const responseHeaders = {
@@ -1120,13 +1269,12 @@ async function handleChat(req, res, config) {
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("text/event-stream")) {
     try {
-      const raw = await response.text();
-      const payload = JSON.parse(raw);
+      const payload = await readResponseJson(response, MAX_NON_STREAM_RESPONSE_BYTES, "模型非流式响应", resetIdleTimeout);
       await writeResponseChunk(res, `data: ${JSON.stringify(payload)}\n\n`);
       if (!res.destroyed) res.end("data: [DONE]\n\n");
     } catch (error) {
       if (!res.destroyed) {
-        const message = timedOut ? "模型响应超时（5 分钟）" : error.message;
+        const message = timedOut ? "模型平台长时间没有返回数据" : error.message;
         await writeResponseChunk(res, `event: error\ndata: ${JSON.stringify({error: {message}})}\n\n`);
         res.end();
       }
@@ -1142,11 +1290,12 @@ async function handleChat(req, res, config) {
     while (true) {
       const {value, done} = await reader.read();
       if (done || res.destroyed) break;
+      resetIdleTimeout();
       if (!await writeResponseChunk(res, value)) break;
     }
   } catch (error) {
     if (!res.destroyed && (timedOut || !upstreamController.signal.aborted)) {
-      const message = timedOut ? "模型响应超时（5 分钟）" : error.message;
+      const message = timedOut ? "模型平台长时间没有返回数据" : error.message;
       await writeResponseChunk(res, `event: error\ndata: ${JSON.stringify({error: {message}})}\n\n`);
     }
   } finally {
@@ -1180,6 +1329,8 @@ function serveStatic(urlPath, res) {
 export function createAppServer(options = {}) {
   const port = Number(options.port ?? process.env.MODELBRIDGE_PORT ?? process.env.BAILIAN_PORT ?? 8000);
   if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new Error("服务端口必须是 0 到 65535 之间的整数");
+  const chatIdleTimeoutMs = Number(options.chatIdleTimeoutMs ?? CHAT_IDLE_TIMEOUT_MS);
+  if (!Number.isFinite(chatIdleTimeoutMs) || chatIdleTimeoutMs <= 0) throw new Error("聊天空闲超时必须是正数");
   const config = options.config || loadConfig();
   const usesPersistentConfig = !options.config;
 
@@ -1273,7 +1424,7 @@ export function createAppServer(options = {}) {
         return sendJson(res, 200, publicState(config));
       }
 
-      if (req.method === "POST" && pathname === "/api/chat") return handleChat(req, res, config);
+      if (req.method === "POST" && pathname === "/api/chat") return handleChat(req, res, config, chatIdleTimeoutMs);
       if (req.method === "GET") return serveStatic(pathname, res);
       return sendJson(res, 405, {error: {message: "不支持的请求方法"}});
     } catch (error) {

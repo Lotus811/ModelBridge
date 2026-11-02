@@ -1,8 +1,10 @@
 import {extractDocxText} from "./docx.js";
 import {normalizeUsage, summarizeUsage} from "./usage.js";
 import {renderMarkdownInto} from "./markdown.js";
+import {createSseParser, extractChunk} from "./sse.js";
+import {conversationToMarkdown, createConversationExport, importConversationExport} from "./conversation.js";
 
-const CLIENT_VERSION = "1.7.0";
+const CLIENT_VERSION = "1.8.0";
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 
@@ -21,6 +23,7 @@ const MAX_PDF_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_DOCX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENT_PAYLOAD_BYTES = 24 * 1024 * 1024;
 const MAX_REQUEST_BYTES = 31 * 1024 * 1024;
+const MAX_CONVERSATION_IMPORT_BYTES = 5 * 1024 * 1024;
 const IMAGE_MIME_BY_EXTENSION = Object.freeze({png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif"});
 const TEXT_EXTENSIONS = new Set([
   "txt", "md", "json", "csv", "tsv", "js", "mjs", "cjs", "ts", "tsx", "jsx", "py", "java",
@@ -148,6 +151,7 @@ const state = {
   settings: normalizeSettings(storedSettings),
   busy: false,
   attachmentsProcessing: false,
+  conversationImporting: false,
   providerSwitching: false,
   modelsLoadGeneration: 0,
   versionMismatch: false,
@@ -245,6 +249,10 @@ function renderAttachmentTray() {
 }
 
 async function addFiles(fileList) {
+  if (state.conversationImporting) {
+    toast("正在导入对话，请稍候再添加附件", "error");
+    return;
+  }
   if (state.busy) {
     toast("请等待当前回答结束后再添加附件", "error");
     return;
@@ -439,20 +447,31 @@ function activeProvider() {
 
 function syncInteractionControls() {
   const serverReady = Boolean(state.server);
+  const dataOperationBusy = state.attachmentsProcessing || state.conversationImporting;
   const providerSelect = $("#providerSelect");
   if (providerSelect) {
-    providerSelect.disabled = !serverReady || !state.server?.providers.length || state.versionMismatch || state.busy || state.providerSwitching;
+    providerSelect.disabled = !serverReady || !state.server?.providers.length || state.versionMismatch || state.busy || state.providerSwitching || state.conversationImporting;
   }
   const clearButton = $("#clearBtn");
-  if (clearButton) clearButton.disabled = state.busy || state.attachmentsProcessing;
+  if (clearButton) clearButton.disabled = state.busy || dataOperationBusy;
   const attachButton = $("#attachBtn");
-  if (attachButton) attachButton.disabled = state.busy || state.attachmentsProcessing;
+  if (attachButton) attachButton.disabled = state.busy || dataOperationBusy;
   const fileInput = $("#fileInput");
-  if (fileInput) fileInput.disabled = state.busy || state.attachmentsProcessing;
+  if (fileInput) fileInput.disabled = state.busy || dataOperationBusy;
+  const conversationImportInput = $("#conversationImportInput");
+  if (conversationImportInput) conversationImportInput.disabled = state.busy || dataOperationBusy;
+  for (const id of ["exportConversationJsonBtn", "exportConversationMarkdownBtn"]) {
+    const button = $(`#${id}`);
+    if (button) button.disabled = state.busy || dataOperationBusy || !state.messages.length;
+  }
+  const importConversationButton = $("#importConversationBtn");
+  if (importConversationButton) importConversationButton.disabled = state.busy || dataOperationBusy;
   for (const id of ["manageProvidersBtn", "topSettingsBtn"]) {
     const button = $(`#${id}`);
-    if (button) button.disabled = !serverReady || state.versionMismatch || state.busy;
+    if (button) button.disabled = !serverReady || state.versionMismatch || state.busy || state.conversationImporting;
   }
+  input.disabled = state.conversationImporting;
+  sendBtn.disabled = state.conversationImporting;
 }
 
 function renderProviderSelect() {
@@ -713,13 +732,16 @@ function saveConversation() {
       if (!message.attachments?.length) return message;
       return {
         ...message,
-        content: message.displayContent || "（本轮包含附件；刷新页面后附件内容不再参与上下文）",
+        content: typeof message.content === "string"
+          ? message.content
+          : message.displayContent || "（本轮包含附件；刷新页面后附件内容不再参与上下文）",
         attachments: message.attachments.map(attachment => ({...attachment, previewUrl: "", retained: false}))
       };
     });
-    writeStorage(STORAGE_KEYS.conversation, persisted);
+    return writeStorage(STORAGE_KEYS.conversation, persisted);
   } catch {
     showStorageWarning();
+    return false;
   }
 }
 
@@ -729,19 +751,6 @@ function resizeInput() {
   const height = Math.min(input.scrollHeight, heightLimit);
   input.style.height = `${height}px`;
   input.style.overflowY = input.scrollHeight > height ? "auto" : "hidden";
-}
-
-function extractChunk(payload) {
-  const choice = payload?.choices?.[0];
-  const delta = choice?.delta || choice?.message || {};
-  let content = delta.content ?? "";
-  if (Array.isArray(content)) content = content.map(part => part?.text || "").join("");
-  return {
-    content: typeof content === "string" ? content : "",
-    reasoning: typeof (delta.reasoning_content ?? delta.reasoning) === "string" ? (delta.reasoning_content ?? delta.reasoning) : "",
-    finishReason: choice?.finish_reason || "",
-    usage: payload?.usage && typeof payload.usage === "object" ? payload.usage : null
-  };
 }
 
 function setChatBusy(busy) {
@@ -772,6 +781,18 @@ function setRetryAction(view, kind, assistantMessage = null) {
   addMessageAction(view, kind === "incomplete" ? "提高上限并重试" : "重试", "retry-request");
 }
 
+function isChatNearBottom(threshold = 96) {
+  return chat.scrollHeight - chat.scrollTop - chat.clientHeight <= threshold;
+}
+
+function scheduleChatFollow(view, shouldFollow) {
+  if (view.scrollFrame) cancelAnimationFrame(view.scrollFrame);
+  view.scrollFrame = requestAnimationFrame(() => {
+    view.scrollFrame = 0;
+    if (shouldFollow()) chat.scrollTop = chat.scrollHeight;
+  });
+}
+
 async function generateAssistant() {
   const requestModel = state.selectedModel;
   const requestProviderName = state.provider.name;
@@ -789,6 +810,9 @@ async function generateAssistant() {
   const controller = new AbortController();
   state.abortController = controller;
   setChatBusy(true);
+  let followStream = isChatNearBottom();
+  const trackScrollPosition = () => { followStream = isChatNearBottom(); };
+  chat.addEventListener("scroll", trackScrollPosition, {passive: true});
 
   try {
     const body = JSON.stringify(chatRequestPayload());
@@ -806,7 +830,7 @@ async function generateAssistant() {
 
     const omittedParameters = (response.headers.get("X-ModelBridge-Omitted-Parameters") || "").split(",").filter(Boolean);
     if (omittedParameters.length) {
-      const labels = {temperature: "温度", top_p: "Top P", max_tokens: "最大 Token", reasoning_effort: "推理强度", stream_options: "Token 用量统计"};
+      const labels = {temperature: "温度", top_p: "Top P", max_tokens: "最大 Token", max_completion_tokens: "最大 Token", reasoning_effort: "推理强度", stream_options: "Token 用量统计"};
       const noticeKey = `${state.provider.id}\u0000${state.selectedModel}\u0000${omittedParameters.join(",")}`;
       if (!state.compatibilityNotices.has(noticeKey)) {
         state.compatibilityNotices.add(noticeKey);
@@ -821,17 +845,23 @@ async function generateAssistant() {
     if (!response.body) throw new Error("模型平台没有返回响应正文");
 
     const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    const handleStreamLine = line => {
-      if (!line.startsWith("data:")) return;
-      const raw = line.slice(5).trim();
-      if (!raw || raw === "[DONE]") return;
+    const parser = createSseParser(event => {
+      if (!["message", "error"].includes(event.type)) return true;
+      const raw = event.data.trim();
+      if (raw === "[DONE]") return false;
+      if (!raw) return true;
       let payload;
-      try { payload = JSON.parse(raw); } catch { return; }
-      if (payload.error) throw new Error(payload.error.message || String(payload.error));
+      try { payload = JSON.parse(raw); }
+      catch {
+        throw new Error(event.type === "error" ? raw : "模型平台返回了无法解析的流式数据");
+      }
+      if (event.type === "error" || payload.error) {
+        const detail = payload.error;
+        throw new Error(typeof detail === "string" ? detail : detail?.message || payload.message || "模型平台返回流式错误");
+      }
       const chunk = extractChunk(payload);
       assistantMessage.content += chunk.content;
+      assistantMessage.content += chunk.refusal;
       assistantMessage.reasoning += chunk.reasoning;
       if (chunk.finishReason) assistantMessage.finishReason = chunk.finishReason;
       if (chunk.usage) assistantMessage.usage = chunk.usage;
@@ -841,18 +871,26 @@ async function generateAssistant() {
         view.reasoning.hidden = false;
         view.reasoningText.textContent = assistantMessage.reasoning;
       }
-      chat.scrollTop = chat.scrollHeight;
-    };
-    while (true) {
-      const {value, done} = await reader.read();
-      buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() || "";
-      for (const line of lines) handleStreamLine(line);
-      if (done) {
-        if (buffer.trim()) handleStreamLine(buffer);
-        break;
+      scheduleChatFollow(view, () => followStream);
+      return true;
+    });
+    try {
+      while (true) {
+        const {value, done} = await reader.read();
+        if (done) {
+          parser.finish();
+          break;
+        }
+        if (!parser.push(value)) {
+          void reader.cancel().catch(() => {});
+          break;
+        }
       }
+    } catch (error) {
+      void reader.cancel().catch(() => {});
+      throw error;
+    } finally {
+      try { reader.releaseLock(); } catch {}
     }
 
     if (!assistantMessage.content && !assistantMessage.reasoning) throw new Error("模型没有返回文本内容，可能不支持 Chat Completions 接口");
@@ -869,6 +907,7 @@ async function generateAssistant() {
     }
 
     renderAssistantMarkdown(view, assistantMessage.content, true);
+    scheduleChatFollow(view, () => followStream);
     state.messages.push(assistantMessage);
     const usageEvent = recordUsage(assistantMessage.usage, {model: requestModel, providerName: requestProviderName});
     if (assistantMessage.usage) {
@@ -888,16 +927,25 @@ async function generateAssistant() {
         state.messages.push(assistantMessage);
         saveConversation();
         renderAssistantMarkdown(view, assistantMessage.content, true);
+        scheduleChatFollow(view, () => followStream);
       } else {
         view.article.remove();
       }
       toast("已停止生成");
     } else {
+      if (view.markdownFrame) {
+        cancelAnimationFrame(view.markdownFrame);
+        view.markdownFrame = 0;
+      }
       view.article.classList.add("error");
       view.content.textContent = `出错了：${error.message}`;
+      scheduleChatFollow(view, () => followStream);
       setRetryAction(view, "error");
     }
   } finally {
+    chat.removeEventListener("scroll", trackScrollPosition);
+    if (view.scrollFrame) cancelAnimationFrame(view.scrollFrame);
+    if (followStream) chat.scrollTop = chat.scrollHeight;
     view.content.classList.remove("cursor");
     state.abortController = null;
     setChatBusy(false);
@@ -912,6 +960,10 @@ async function sendMessage(prefill = "") {
   }
   if (state.busy) {
     state.abortController?.abort();
+    return;
+  }
+  if (state.conversationImporting) {
+    toast("正在导入对话，请稍候再发送", "error");
     return;
   }
   if (state.attachmentsProcessing) {
@@ -1228,6 +1280,91 @@ function openChatSettings() {
   openModal($("#chatSettingsModal"));
 }
 
+function conversationExportMetadata() {
+  return {
+    appVersion: CLIENT_VERSION,
+    providerName: state.provider?.name || state.messages.at(-1)?.providerName || "",
+    model: state.selectedModel || state.messages.at(-1)?.model || "",
+    settings: {
+      temperature: state.settings.temperature,
+      topP: state.settings.topP,
+      maxTokens: state.settings.maxTokens,
+      reasoningEffort: state.settings.reasoningEffort
+    }
+  };
+}
+
+function downloadTextFile(filename, content, type) {
+  const url = URL.createObjectURL(new Blob([content], {type}));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.hidden = true;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportConversation(format) {
+  if (!state.messages.length) {
+    toast("当前还没有可导出的对话", "error");
+    return;
+  }
+  try {
+    const exported = createConversationExport(state.messages, conversationExportMetadata());
+    const stamp = exported.exportedAt.replace(/[:.]/g, "-");
+    if (format === "markdown") {
+      downloadTextFile(`modelbridge-${stamp}.md`, conversationToMarkdown(exported), "text/markdown;charset=utf-8");
+    } else {
+      downloadTextFile(`modelbridge-${stamp}.json`, `${JSON.stringify(exported, null, 2)}\n`, "application/json;charset=utf-8");
+    }
+    toast(format === "markdown" ? "已导出 Markdown 对话" : "已导出 JSON 对话备份");
+  } catch (error) {
+    toast(error.message, "error", 7000);
+  }
+}
+
+async function importConversationFile(event) {
+  const inputElement = event.currentTarget;
+  const file = inputElement.files?.[0];
+  inputElement.value = "";
+  if (!file) return;
+  if (state.busy || state.attachmentsProcessing) {
+    toast("请等待当前操作结束后再导入对话", "error");
+    return;
+  }
+  if (file.size > MAX_CONVERSATION_IMPORT_BYTES) {
+    toast(`对话备份不能超过 ${formatBytes(MAX_CONVERSATION_IMPORT_BYTES)}`, "error");
+    return;
+  }
+  state.conversationImporting = true;
+  syncInteractionControls();
+  try {
+    const parsed = JSON.parse(await file.text());
+    const messages = importConversationExport(parsed);
+    if (state.messages.length && !confirm(`导入会替换当前 ${state.messages.length} 条消息，是否继续？`)) return;
+    state.messages = messages;
+    state.retryRequest = null;
+    state.pendingAttachments = [];
+    const persisted = saveConversation();
+    renderAttachmentTray();
+    renderConversation();
+    syncInteractionControls();
+    closeModals();
+    toast(
+      persisted ? `已导入 ${messages.length} 条对话消息` : `已导入 ${messages.length} 条消息，但浏览器无法持久保存，刷新后可能丢失`,
+      persisted ? "success" : "error",
+      persisted ? 3600 : 7000
+    );
+  } catch (error) {
+    toast(`导入失败：${error.message}`, "error", 8000);
+  } finally {
+    state.conversationImporting = false;
+    syncInteractionControls();
+  }
+}
+
 function saveChatSettings() {
   state.settings = {
     systemPrompt: $("#systemPrompt").value,
@@ -1360,6 +1497,10 @@ async function switchProvider(id) {
 }
 
 function clearConversation() {
+  if (state.conversationImporting) {
+    toast("正在导入对话，请稍候再开始新对话", "error");
+    return;
+  }
   if (state.busy) {
     toast("请先停止当前回答，再开始新对话", "error");
     return;
@@ -1375,6 +1516,7 @@ function clearConversation() {
   removeStorage(STORAGE_KEYS.conversation);
   renderAttachmentTray();
   renderConversation();
+  syncInteractionControls();
 }
 
 function bindEvents() {
@@ -1477,6 +1619,10 @@ function bindEvents() {
 
   $("#chatSettingsBtn").addEventListener("click", openChatSettings);
   $("#saveChatSettingsBtn").addEventListener("click", saveChatSettings);
+  $("#exportConversationJsonBtn").addEventListener("click", () => exportConversation("json"));
+  $("#exportConversationMarkdownBtn").addEventListener("click", () => exportConversation("markdown"));
+  $("#importConversationBtn").addEventListener("click", () => $("#conversationImportInput").click());
+  $("#conversationImportInput").addEventListener("change", importConversationFile);
   $("#clearUsageHistoryBtn").addEventListener("click", clearUsageHistory);
   $("#saveProfileBtn").addEventListener("click", () => updateModelProfile(false));
   $("#resetProfileBtn").addEventListener("click", () => updateModelProfile(true));
@@ -1490,6 +1636,12 @@ function bindEvents() {
   $("#backdrop").addEventListener("click", closeModals);
   document.addEventListener("keydown", event => {
     if (event.key === "Escape") {
+      const modal = $$(".modal").find(item => !item.hidden);
+      if (state.busy && !modal) {
+        event.preventDefault();
+        state.abortController?.abort();
+        return;
+      }
       closeModals();
       $("#sidebar").classList.remove("open");
     }

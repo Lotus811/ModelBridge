@@ -7,9 +7,11 @@ ModelBridge is a local-first, dependency-free chat client for OpenAI-compatible 
 - Multiple local provider profiles
 - Presets for Alibaba Cloud Model Studio, OpenAI, DeepSeek, OpenRouter, SiliconFlow, and Ollama
 - Automatic `/models` discovery with a manual model-list fallback
-- Streaming chat, stop generation, reasoning display, and safe Markdown rendering
+- Standards-compliant SSE streaming, stop-button or `Esc` cancellation, reasoning display, and safe Markdown rendering
 - One-click dual-format copy: rich text for Word/email, raw Markdown for text editors, plus per-code-block copy
+- Conversation export to JSON/Markdown and message restore from ModelBridge JSON backups
 - Automatic retry when a model rejects an unsupported optional parameter
+- Automatic compatibility between modern `max_completion_tokens` and common `max_tokens` endpoints
 - Stale-backend detection and automatic local-port selection
 - Image, PDF, Word (DOCX), text, and code attachments with file picking and drag-and-drop
 - Local token dashboard with per-request and cumulative input, output, cached, and total tokens
@@ -48,6 +50,12 @@ Assistant messages render headings, emphasis, strikethrough, quotes, ordered/uno
 
 The message copy action writes both the original Markdown and rendered HTML when the browser supports multi-format clipboard data. Rich-text applications such as Word retain formatting, while text editors receive the Markdown source. Older browsers fall back to plain Markdown. Code blocks also have a dedicated copy action.
 
+## Streaming and conversation backups
+
+The streaming parser follows SSE event framing and handles arbitrary network chunk boundaries, BOMs, comments, `CR`/`LF`/`CRLF` line endings, and multiline `data` fields. While generation is active, use the stop button or press `Esc` when no modal is open; the browser aborts the upstream request and keeps content already received.
+
+The “Conversation data” controls export a restorable JSON backup or a readable Markdown transcript. Importing JSON replaces the current messages after confirmation. Exports contain conversation text, provider/model identifiers, selected generation metadata, and attachment metadata only; they **never contain API keys, extra request headers, or image/PDF attachment bytes**. Reattach the original files if a restored conversation needs them again.
+
 ## Development
 
 ```bash
@@ -58,9 +66,13 @@ npm start
 
 ## Security
 
-Provider settings are written with a temporary file and atomic replacement. Local API routes validate both the loopback Host header and browser Origin. API keys are still stored as plaintext in `config.local.json`; Unix mode `0600` is attempted, but Windows file modes do not provide equivalent owner/group isolation.
+Provider settings are written with a temporary file and atomic replacement. Local API routes validate both the loopback Host header and browser Origin. Remote providers require HTTPS unless they use a loopback host; upstream redirects are rejected so credentials do not follow a redirect. Model-list, error, probe, and non-stream response bodies are bounded, and an idle chat stream is aborted after five minutes.
+
+A custom Base URL is an operator-controlled trust boundary: the backend will contact a saved HTTPS endpoint that is reachable from the machine, and it does not provide a general DNS/IP sandbox. Add only providers you trust and do not let untrusted users edit provider settings. API keys are still stored as plaintext in `config.local.json`; Unix mode `0600` is attempted, but Windows file modes do not provide equivalent owner/group isolation.
 
 The server binds to `127.0.0.1` by default. Do not commit `config.local.json`, `api.txt`, or `.env`. If a key has ever entered Git history, rotate it at the provider rather than relying on `.gitignore`.
+
+After the first GitHub push, enable [Secret Scanning and Push Protection](https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning), [CodeQL default setup](https://docs.github.com/en/code-security/code-scanning/enabling-code-scanning/configuring-default-setup-for-code-scanning), and a [`main` branch protection rule or ruleset](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches) that requires CI and blocks force pushes.
 
 ## License
 

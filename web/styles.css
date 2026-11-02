@@ -250,6 +250,11 @@ code { font-family: "Cascadia Code", Consolas, monospace; font-size: .92em; }
 .range-field output { float: right; color: var(--green); }
 .range-field input { width: 100%; accent-color: var(--green); }
 .settings-card .form-actions { margin-top: 8px; }
+.conversation-data-section { display: grid; gap: 12px; margin-top: 18px; border-top: 1px solid var(--line-soft); padding-top: 16px; }
+.conversation-data-section h3 { margin: 0 0 4px; font-size: 12px; }
+.conversation-data-section p { margin: 0; color: var(--faint); font-size: 9px; line-height: 1.55; }
+.conversation-data-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.conversation-data-actions .secondary-btn { flex: 1 1 120px; }
 .usage-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin-bottom: 16px; }
 .usage-stats > div { border: 1px solid var(--line-soft); border-radius: 12px; padding: 12px; background: #faf9f5; }
 .usage-stats small, .usage-stats strong { display: block; }

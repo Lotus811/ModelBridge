@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible ModelBridge problem without sharing credentials.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve ModelBridge. Never paste API keys, Authorization headers, `config.local.json`, or `api.txt`.
+        For security vulnerabilities, follow `SECURITY.md` instead of filing a public issue.
+  - type: checkboxes
+    id: redacted
+    attributes:
+      label: Credential safety
+      options:
+        - label: I removed API keys, tokens, Authorization headers, and private endpoint identifiers from this report.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: ModelBridge version or commit
+      placeholder: v1.8.0 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, Node.js version, and browser version.
+      placeholder: Windows 11, Node.js 20.19.0, Chrome 150
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Provider preset and model
+      description: Do not include the API key or private workspace hostname.
+      placeholder: OpenAI-compatible custom provider, model-name
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start ModelBridge
+        2. Select ...
+        3. Send ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and redacted logs
+      description: Paste only the minimum log excerpt after removing secrets and private URLs.
+    validations:
+      required: true

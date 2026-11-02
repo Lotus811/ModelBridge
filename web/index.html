@@ -146,7 +146,7 @@
           </details>
 
           <div id="providerFeedback" class="feedback" hidden></div>
-          <p id="testCostNote" class="test-note">连接测试会先读取模型列表，再实际调用一个聊天模型（最多约 64 个输出 Token），可能产生极少量费用。</p>
+          <p id="testCostNote" class="test-note">连接测试会先读取模型列表，再要求模型只回复“OK”，通常只生成几个 Token。部分推理模型要求设置较高输出上限，但仍按实际生成量计费。</p>
           <footer class="form-actions">
             <button id="deleteProviderBtn" class="danger-btn" type="button" hidden>删除</button>
             <span></span>
@@ -169,6 +169,15 @@
         <label class="field"><span>推理强度</span><select id="reasoningEffort" class="select"><option value="">平台默认</option><option value="none">None</option><option value="minimal">Minimal</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">XHigh</option><option value="max">Max（Kimi K3）</option></select></label>
       </div>
       <p class="field-help">Kimi K3/K3.1 只接受 Max；程序会按模型要求调整不兼容参数。推理 Token 也计入最大输出 Token。</p>
+      <section class="conversation-data-section" aria-labelledby="conversationDataTitle">
+        <div><h3 id="conversationDataTitle">对话数据</h3><p>导出当前会话的文本与元数据，不包含 API Key、附加请求头或图片/PDF 原始数据。</p></div>
+        <div class="conversation-data-actions">
+          <button id="exportConversationJsonBtn" class="secondary-btn" type="button">导出 JSON</button>
+          <button id="exportConversationMarkdownBtn" class="secondary-btn" type="button">导出 Markdown</button>
+          <button id="importConversationBtn" class="secondary-btn" type="button">导入 JSON</button>
+          <input id="conversationImportInput" type="file" hidden accept="application/json,.json">
+        </div>
+      </section>
       <footer class="form-actions"><span></span><span></span><button id="saveChatSettingsBtn" class="primary-btn" type="button">保存参数</button></footer>
     </div>
   </div>
