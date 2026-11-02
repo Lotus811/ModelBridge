@@ -244,6 +244,8 @@ code { font-family: "Cascadia Code", Consolas, monospace; font-size: .92em; }
 .provider-form:not(.wizard-mode) .provider-identity-grid { grid-template-columns: 1fr 1fr; }
 .provider-form.wizard-mode .preset-select-field { display: none; }
 .provider-form.wizard-mode .provider-identity-grid { grid-template-columns: 1fr; }
+.provider-form.guided-preset:not(.show-guided-advanced) .beginner-advanced { display: none !important; }
+.provider-form.guided-preset:not(.show-guided-advanced) .key-grid { grid-template-columns: 1fr; }
 .preset-quick-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 18px; }
 .preset-quick-card { min-height: 58px; overflow: hidden; border: 1px solid var(--line); border-radius: 11px; padding: 9px 10px; background: white; text-align: left; }
 .preset-quick-card:hover { border-color: #9abaae; background: #f8fbfa; }
@@ -251,6 +253,17 @@ code { font-family: "Cascadia Code", Consolas, monospace; font-size: .92em; }
 .preset-quick-card b, .preset-quick-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preset-quick-card b { font-size: 10px; }
 .preset-quick-card small { margin-top: 5px; color: var(--muted); font-size: 8px; }
+.provider-recipe { margin-bottom: 17px; border: 1px solid #b9d2c9; border-radius: 12px; padding: 13px; background: #f3f9f6; }
+.provider-recipe header { display: flex; align-items: center; gap: 9px; }
+.provider-recipe header span { border-radius: 999px; padding: 3px 7px; color: white; background: var(--green); font-size: 8px; font-weight: 800; }
+.provider-recipe header strong { font-size: 12px; }
+.provider-recipe > p { margin: 9px 0 11px; color: #4f6159; font-size: 10px; line-height: 1.6; }
+.provider-recipe dl { display: grid; grid-template-columns: 1.5fr .8fr 1fr; gap: 6px; margin: 0; }
+.provider-recipe dl > div { min-width: 0; border: 1px solid #dce9e4; border-radius: 8px; padding: 8px; background: rgba(255,255,255,.7); }
+.provider-recipe dt { color: var(--muted); font-size: 8px; }
+.provider-recipe dd { overflow: hidden; margin: 4px 0 0; font-size: 9px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.provider-recipe footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.provider-recipe footer .text-btn { padding: 4px; font-size: 9px; }
 .setup-banner { display: flex; flex-direction: column; gap: 3px; margin-bottom: 18px; border: 1px solid #b9d2c9; border-radius: 10px; padding: 11px 13px; color: var(--green-dark); background: var(--green-soft); font-size: 12px; }
 .setup-banner span { opacity: .8; font-size: 10px; }
 .form-grid { display: grid; gap: 13px; }
@@ -360,6 +373,7 @@ code { font-family: "Cascadia Code", Consolas, monospace; font-size: .92em; }
   .local-note { display: none; }
   .provider-form { overflow: visible; }
   .preset-quick-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .provider-recipe dl { grid-template-columns: 1fr; }
   .conversation-actions { opacity: 1; }
 }
 

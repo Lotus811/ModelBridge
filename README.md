@@ -56,6 +56,8 @@ node server.mjs
 
 浏览器打开 <http://127.0.0.1:8000>，在首次设置向导中选择平台、填写 Base URL 和 API Key，再执行连接诊断；只有核心聊天调用通过后才进入确认保存。
 
+使用内置平台预设时，新手只需粘贴 API Key，Base URL、认证方式和模型发现均由程序配置；需要时再点“修改高级配置”。例如 DeepSeek 在本应用中使用 OpenAI 兼容地址 `https://api.deepseek.com`，不要填写供 Claude Code/Anthropic SDK 使用的 `https://api.deepseek.com/anthropic`。如果改乱了，可点“恢复推荐配置”。
+
 如果 8000 端口被旧版 ModelBridge 占用，一键启动器会自动选择 8001–8010 中的空闲端口并打开正确版本。确认新版正常后，可以关闭旧的命令行窗口。
 
 ## 平台兼容性

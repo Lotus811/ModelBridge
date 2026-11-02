@@ -141,25 +141,39 @@
           </section>
 
           <section class="wizard-panel" data-wizard-panel="2">
-            <label class="field"><span>Base URL</span><input id="baseUrl" type="url" spellcheck="false" placeholder="https://example.com/v1" required><small>填写到版本路径，例如 <code>https://example.com/v1</code></small></label>
-
-            <div class="form-grid key-grid">
-              <label class="field"><span>API Key</span><div class="password-wrap"><input id="apiKey" type="password" autocomplete="new-password" placeholder="粘贴 API Key"><button id="toggleKeyBtn" type="button" aria-label="显示或隐藏 API Key">显示</button></div><small id="apiKeyHint">密钥不会发送给 ModelBridge 以外的服务</small></label>
-              <label class="field compact-field"><span>认证方式</span><select id="authMode" class="select"><option value="bearer">Bearer Token</option><option value="x-api-key">x-api-key</option><option value="api-key">api-key</option><option value="custom">自定义请求头</option><option value="none">无需认证</option></select></label>
+            <div id="providerRecipe" class="provider-recipe" hidden>
+              <header><span>推荐配置</span><strong id="providerRecipeTitle"></strong></header>
+              <p id="providerRecipeNote"></p>
+              <dl>
+                <div><dt>接口地址</dt><dd id="providerRecipeUrl"></dd></div>
+                <div><dt>认证</dt><dd id="providerRecipeAuth"></dd></div>
+                <div><dt>模型</dt><dd id="providerRecipeModels"></dd></div>
+              </dl>
+              <footer>
+                <button id="toggleProviderAdvancedBtn" class="text-btn" type="button">修改高级配置</button>
+                <button id="restorePresetBtn" class="text-btn" type="button">恢复推荐配置</button>
+              </footer>
             </div>
 
-            <label id="customHeaderField" class="field" hidden><span>自定义认证请求头</span><input id="apiKeyHeader" type="text" placeholder="例如 X-API-Key"></label>
+            <label class="field beginner-advanced"><span>Base URL</span><input id="baseUrl" type="url" spellcheck="false" placeholder="https://example.com/v1" required><small>只填写 Base URL，不要粘贴以 <code>/messages</code> 或 <code>/chat/completions</code> 结尾的完整接口地址</small></label>
 
-            <fieldset class="model-mode-fieldset">
+            <div class="form-grid key-grid">
+              <label id="apiKeyField" class="field"><span>API Key</span><div class="password-wrap"><input id="apiKey" type="password" autocomplete="new-password" placeholder="粘贴 API Key"><button id="toggleKeyBtn" type="button" aria-label="显示或隐藏 API Key">显示</button></div><small id="apiKeyHint">只粘贴平台生成的 Key，不要粘贴说明文字</small></label>
+              <label class="field compact-field beginner-advanced"><span>认证方式</span><select id="authMode" class="select"><option value="bearer">Bearer Token</option><option value="x-api-key">x-api-key</option><option value="api-key">api-key</option><option value="custom">自定义请求头</option><option value="none">无需认证</option></select></label>
+            </div>
+
+            <label id="customHeaderField" class="field beginner-advanced" hidden><span>自定义认证请求头</span><input id="apiKeyHeader" type="text" placeholder="例如 X-API-Key"></label>
+
+            <fieldset class="model-mode-fieldset beginner-advanced">
               <legend>模型列表</legend>
               <label class="radio-card"><input type="radio" name="modelsMode" value="auto" checked><span><b>自动读取</b><small>调用平台的 <code>/models</code> 接口</small></span></label>
               <label class="radio-card"><input type="radio" name="modelsMode" value="manual"><span><b>手动填写</b><small>适合不提供模型列表的平台</small></span></label>
             </fieldset>
 
-            <label id="manualModelsField" class="field" hidden><span>模型 ID（每行一个）</span><textarea id="manualModels" rows="4" placeholder="model-name-1&#10;model-name-2"></textarea></label>
-            <label class="field"><span>默认模型（可选）</span><input id="defaultModel" type="text" spellcheck="false" placeholder="留空则自动选择"></label>
+            <label id="manualModelsField" class="field beginner-advanced" hidden><span>模型 ID（每行一个）</span><textarea id="manualModels" rows="4" placeholder="model-name-1&#10;model-name-2"></textarea></label>
+            <label class="field beginner-advanced"><span>默认模型（可选）</span><input id="defaultModel" type="text" spellcheck="false" placeholder="留空则自动选择"></label>
 
-            <details class="advanced">
+            <details class="advanced beginner-advanced">
               <summary>高级设置</summary>
               <div class="form-grid two-columns">
                 <label class="field"><span>模型列表路径</span><input id="modelsPath" type="text" spellcheck="false" value="/models"></label>

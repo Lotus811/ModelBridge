@@ -15,7 +15,7 @@ import {createSseParser} from "./web/sse.js";
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(ROOT, "config.local.json");
 const LEGACY_CONFIG_PATH = path.join(ROOT, "api.txt");
-const APP_VERSION = "1.9.0";
+const APP_VERSION = "1.9.1";
 const CONFIG_VERSION = 1;
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_CONTEXT_TEXT_CHARS = 240_000;
@@ -42,7 +42,9 @@ export const PROVIDER_PRESETS = Object.freeze([
     authMode: "bearer",
     modelsPath: "/models",
     chatPath: "/chat/completions",
-    hint: "工作空间专属地址可直接覆盖此地址"
+    hint: "工作空间专属地址可直接覆盖此地址",
+    beginnerNote: "通常只需粘贴百炼 API Key，其余保持推荐配置",
+    recommendedModels: ["qwen-plus", "qwen-flash"]
   },
   {
     id: "openai",
@@ -51,7 +53,9 @@ export const PROVIDER_PRESETS = Object.freeze([
     authMode: "bearer",
     modelsPath: "/models",
     chatPath: "/chat/completions",
-    hint: "标准 OpenAI Chat Completions 接口"
+    hint: "标准 OpenAI Chat Completions 接口",
+    beginnerNote: "只需粘贴 OpenAI API Key，程序会自动读取模型",
+    recommendedModels: ["gpt-4.1-mini"]
   },
   {
     id: "deepseek",
@@ -60,7 +64,9 @@ export const PROVIDER_PRESETS = Object.freeze([
     authMode: "bearer",
     modelsPath: "/models",
     chatPath: "/chat/completions",
-    hint: "DeepSeek 官方 OpenAI 兼容接口"
+    hint: "DeepSeek 官方 OpenAI 兼容接口；不要填写 /anthropic 地址",
+    beginnerNote: "只需粘贴 DeepSeek API Key；不要把 Claude Code 使用的 /anthropic 地址填到这里",
+    recommendedModels: ["deepseek-flash", "deepseek-v4-pro"]
   },
   {
     id: "openrouter",
@@ -69,7 +75,8 @@ export const PROVIDER_PRESETS = Object.freeze([
     authMode: "bearer",
     modelsPath: "/models",
     chatPath: "/chat/completions",
-    hint: "一个 Key 使用多个模型供应商"
+    hint: "一个 Key 使用多个模型供应商",
+    beginnerNote: "只需粘贴 OpenRouter API Key，模型会自动读取"
   },
   {
     id: "siliconflow",
@@ -78,7 +85,8 @@ export const PROVIDER_PRESETS = Object.freeze([
     authMode: "bearer",
     modelsPath: "/models",
     chatPath: "/chat/completions",
-    hint: "SiliconFlow 中国站"
+    hint: "SiliconFlow 中国站",
+    beginnerNote: "只需粘贴硅基流动 API Key，模型会自动读取"
   },
   {
     id: "gemini",
@@ -87,7 +95,8 @@ export const PROVIDER_PRESETS = Object.freeze([
     authMode: "bearer",
     modelsPath: "/models",
     chatPath: "/chat/completions",
-    hint: "适合基础聊天；Gemini 原生高级能力需要独立适配"
+    hint: "适合基础聊天；Gemini 原生高级能力需要独立适配",
+    beginnerNote: "使用 Google AI Studio 的 Gemini API Key；这里走官方 OpenAI 兼容层"
   },
   {
     id: "anthropic",
@@ -96,7 +105,8 @@ export const PROVIDER_PRESETS = Object.freeze([
     authMode: "bearer",
     modelsPath: "/models",
     chatPath: "/chat/completions",
-    hint: "适合基础聊天；Claude 原生文件与缓存能力需要独立适配"
+    hint: "适合基础聊天；Claude 原生文件与缓存能力需要独立适配",
+    beginnerNote: "使用 Claude Console API Key；这里只验证 OpenAI 兼容聊天"
   },
   {
     id: "ollama",
@@ -105,7 +115,8 @@ export const PROVIDER_PRESETS = Object.freeze([
     authMode: "none",
     modelsPath: "/models",
     chatPath: "/chat/completions",
-    hint: "本机 Ollama，无需 API Key"
+    hint: "本机 Ollama，无需 API Key",
+    beginnerNote: "保持 Ollama 正在运行即可，不需要填写 API Key"
   },
   {
     id: "custom",
@@ -114,7 +125,8 @@ export const PROVIDER_PRESETS = Object.freeze([
     authMode: "bearer",
     modelsPath: "/models",
     chatPath: "/chat/completions",
-    hint: "适用于其他 OpenAI-compatible 平台"
+    hint: "适用于其他 OpenAI-compatible 平台",
+    beginnerNote: "需要从平台文档找到 OpenAI 兼容 Base URL；Anthropic/Gemini 原生地址不能直接使用"
   }
 ]);
 
@@ -219,6 +231,9 @@ function normalizeExtraHeaders(value) {
     const headerValue = asText(String(rawValue), 1000);
     if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(name)) throw new Error(`请求头名称不合法：${name}`);
     if (BLOCKED_EXTRA_HEADERS.has(name.toLowerCase())) throw new Error(`请使用认证设置配置请求头：${name}`);
+    if (/[\r\n]/.test(headerValue) || /[^\u0009\u0020-\u00ff]/.test(headerValue)) {
+      throw new Error(`请求头 ${name} 的值包含中文或不支持的字符；请只填写平台文档给出的英文/数字值`);
+    }
     if (headerValue) result[name] = headerValue;
   }
   return result;
@@ -291,6 +306,9 @@ export function normalizeProvider(input, existing = null) {
     ? (existing?.apiKey || "")
     : asText(input.apiKey, 20_000);
   if (authMode !== "none" && !apiKey) throw new Error("请填写 API Key");
+  if (apiKey && !/^[\x21-\x7e]+$/.test(apiKey)) {
+    throw new Error("API Key 包含中文、空格或换行；请只粘贴平台生成的 Key 本身，不要粘贴“你的 API Key”等说明文字");
+  }
 
   const modelsMode = input.modelsMode === "manual" ? "manual" : "auto";
   const manualModels = parseManualModels(input.manualModels);
@@ -489,6 +507,46 @@ export function modelCapabilities(modelId, provider = {}, catalogEntry = null) {
 
 export function endpointUrl(provider, endpointPath) {
   return `${provider.baseUrl.replace(/\/+$/, "")}${endpointPath}`;
+}
+
+export function providerProtocolIssue(provider) {
+  let url;
+  try { url = new URL(provider?.baseUrl); }
+  catch { return null; }
+  const path = url.pathname.replace(/\/+$/, "").toLowerCase();
+  if (url.hostname.toLowerCase() === "api.deepseek.com" && /^\/anthropic(?:\/|$)/.test(path)) {
+    return {
+      code: "anthropic_endpoint",
+      summary: "选错了接口协议：这是 DeepSeek 的 Anthropic API 地址",
+      detail: "https://api.deepseek.com/anthropic 是给 Claude Code 或 Anthropic SDK 使用的 Messages API，不是 OpenAI Chat Completions",
+      suggestion: "选择 DeepSeek 预设并恢复推荐配置：Base URL 使用 https://api.deepseek.com，认证方式使用 Bearer Token"
+    };
+  }
+  if (/\/v1\/messages$/.test(path) || /\/messages$/.test(path)) {
+    return {
+      code: "anthropic_endpoint",
+      summary: "填写的是 Anthropic Messages API 地址",
+      detail: "ModelBridge 当前这个接入方式使用 OpenAI Chat Completions 协议",
+      suggestion: "查找平台文档中的 OpenAI 兼容 Base URL，或选择已有平台预设"
+    };
+  }
+  if (/generatecontent/i.test(path)) {
+    return {
+      code: "gemini_native_endpoint",
+      summary: "填写的是 Gemini 原生 generateContent 地址",
+      detail: "ModelBridge 当前这个接入方式使用 OpenAI Chat Completions 协议",
+      suggestion: "选择 Google Gemini（OpenAI 兼容）预设，不要粘贴完整 generateContent 地址"
+    };
+  }
+  if (/\/(?:chat\/completions|models)$/.test(path)) {
+    return {
+      code: "full_endpoint",
+      summary: "Base URL 填成了单个接口的完整地址",
+      detail: `当前路径以 ${path.endsWith("/models") ? "/models" : "/chat/completions"} 结尾，程序还会自动追加接口路径`,
+      suggestion: "删除末尾的接口名，只保留平台文档所说的 Base URL，或重新选择平台预设"
+    };
+  }
+  return null;
 }
 
 export function unsupportedOptionalParameter(message, payload = {}) {
@@ -1037,6 +1095,14 @@ async function diagnoseProvider(provider, {signal = null} = {}) {
     report.durationMs = Date.now() - started;
     return report;
   };
+  const protocolIssue = providerProtocolIssue(provider);
+  if (protocolIssue) {
+    checks.push(diagnosticCheck("protocol", "fail", protocolIssue.summary, {
+      detail: protocolIssue.detail,
+      suggestion: protocolIssue.suggestion
+    }));
+    return finishReport();
+  }
 
   if (provider.modelsMode === "manual") {
     ids = provider.manualModels;
@@ -1561,6 +1627,8 @@ export function createAppServer(options = {}) {
         const data = await readJson(req);
         const existing = data.id ? providerById(config, data.id) : null;
         const provider = normalizeProvider(data, existing);
+        const issue = providerProtocolIssue(provider);
+        if (issue) throw new Error(`${issue.summary}。${issue.suggestion}`);
         return sendJson(res, 200, await probeProvider(provider));
       }
 
@@ -1589,6 +1657,8 @@ export function createAppServer(options = {}) {
         if (data.id && !existing) return sendJson(res, 404, {error: {message: "要编辑的平台不存在"}});
         if (!existing && config.providers.length >= 30) return sendJson(res, 400, {error: {message: "最多保存 30 个平台"}});
         const provider = normalizeProvider(data, existing);
+        const issue = providerProtocolIssue(provider);
+        if (issue) throw new Error(`${issue.summary}。${issue.suggestion}`);
         if (existing) config.providers[config.providers.findIndex(item => item.id === existing.id)] = provider;
         else config.providers.push(provider);
         if (data.activate !== false || !config.activeProviderId) config.activeProviderId = provider.id;

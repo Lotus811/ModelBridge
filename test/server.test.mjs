@@ -15,6 +15,7 @@ import {
   normalizeModelOverride,
   normalizeProvider,
   parseLegacyApiText,
+  providerProtocolIssue,
   publicProvider,
   readResponseText,
   sanitizeMessageContent,
@@ -42,6 +43,41 @@ test("accepts API keys without requiring an sk- prefix", () => {
   });
   assert.equal(provider.apiKey, "provider.key_with-any-format");
   assert.deepEqual(provider.manualModels, ["model-a", "model-b"]);
+});
+
+test("rejects API keys and header values that cannot be sent as HTTP headers", () => {
+  assert.throws(() => normalizeProvider({
+    name: "Bad key",
+    presetId: "custom",
+    baseUrl: "https://example.com/v1",
+    apiKey: "你的 API Key",
+    authMode: "bearer",
+    modelsMode: "auto"
+  }), /API Key 包含中文/);
+  assert.throws(() => normalizeProvider({
+    name: "Bad header",
+    presetId: "custom",
+    baseUrl: "https://example.com/v1",
+    apiKey: "valid-key",
+    authMode: "bearer",
+    modelsMode: "auto",
+    extraHeaders: {"X-Label": "你好"}
+  }), /请求头 X-Label 的值包含中文/);
+});
+
+test("explains protocol-specific and full endpoint URLs before connecting", () => {
+  const deepseekAnthropic = normalizeProvider({
+    name: "DeepSeek Anthropic",
+    presetId: "deepseek",
+    baseUrl: "https://api.deepseek.com/anthropic",
+    apiKey: "valid-key",
+    authMode: "api-key",
+    modelsMode: "auto"
+  });
+  assert.equal(providerProtocolIssue(deepseekAnthropic).code, "anthropic_endpoint");
+  assert.match(providerProtocolIssue(deepseekAnthropic).suggestion, /https:\/\/api\.deepseek\.com/);
+  assert.equal(providerProtocolIssue({...deepseekAnthropic, baseUrl: "https://example.com/v1/chat/completions"}).code, "full_endpoint");
+  assert.equal(providerProtocolIssue({...deepseekAnthropic, baseUrl: "https://api.deepseek.com"}), null);
 });
 
 test("supports keyless local providers", () => {

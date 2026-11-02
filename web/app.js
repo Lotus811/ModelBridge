@@ -5,7 +5,7 @@ import {createSseParser, extractChunk} from "./sse.js";
 import {conversationToMarkdown, createConversationExport, importConversationExport} from "./conversation.js";
 import {buildConversationMetadata, createConversationId, createConversationRepository} from "./storage.js";
 
-const CLIENT_VERSION = "1.9.0";
+const CLIENT_VERSION = "1.9.1";
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 
@@ -1234,16 +1234,49 @@ function currentPreset() {
   return state.server.presets.find(item => item.id === $("#presetId").value) || state.server.presets.at(-1);
 }
 
+function authModeLabel(mode) {
+  return ({bearer: "Bearer Token", "x-api-key": "x-api-key", "api-key": "api-key", custom: "自定义请求头", none: "无需 API Key"})[mode] || mode;
+}
+
+function renderProviderGuidance() {
+  const form = $("#providerForm");
+  const wizard = form.classList.contains("wizard-mode");
+  const preset = currentPreset();
+  const guided = wizard && preset.id !== "custom";
+  form.classList.toggle("guided-preset", guided);
+  const recipe = $("#providerRecipe");
+  recipe.hidden = !wizard;
+  if (!wizard) return;
+  $("#providerRecipeTitle").textContent = guided ? `${preset.name} 已自动配置` : "自定义接口需要平台文档";
+  $("#providerRecipeNote").textContent = preset.beginnerNote || preset.hint;
+  $("#providerRecipeUrl").textContent = preset.baseUrl || "需要填写";
+  $("#providerRecipeUrl").title = preset.baseUrl || "";
+  $("#providerRecipeAuth").textContent = authModeLabel(preset.authMode);
+  $("#providerRecipeModels").textContent = preset.recommendedModels?.length ? preset.recommendedModels.join(" / ") : "自动读取";
+  $("#toggleProviderAdvancedBtn").hidden = !guided;
+  $("#restorePresetBtn").hidden = !guided;
+  $("#toggleProviderAdvancedBtn").textContent = form.classList.contains("show-guided-advanced") ? "收起高级配置" : "修改高级配置";
+}
+
 function applyPreset() {
   const preset = currentPreset();
+  $("#providerForm").classList.remove("show-guided-advanced");
   $("#providerName").value = preset.id === "custom" ? "" : preset.name;
   $("#baseUrl").value = preset.baseUrl;
   $("#authMode").value = preset.authMode;
   $("#modelsPath").value = preset.modelsPath;
   $("#chatPath").value = preset.chatPath;
+  $("#apiKeyHint").textContent = preset.authMode === "none"
+    ? "这个平台不需要 API Key"
+    : "只粘贴平台生成的 Key，不要带“API Key=”或其他说明文字";
+  const autoMode = document.querySelector('input[name="modelsMode"][value="auto"]');
+  if (autoMode) autoMode.checked = true;
+  $("#manualModels").value = "";
+  $("#defaultModel").value = "";
   $("#presetHint").textContent = preset.hint;
   $$("[data-preset-quick]").forEach(card => card.classList.toggle("selected", card.dataset.presetQuick === preset.id));
   syncProviderForm();
+  renderProviderGuidance();
 }
 
 function clearProviderDiagnostic() {
@@ -1294,7 +1327,9 @@ function setProviderWizardStep(step) {
 
 function setProviderWizardMode(enabled) {
   $("#providerForm").classList.toggle("wizard-mode", enabled);
+  if (!enabled) $("#providerForm").classList.remove("guided-preset", "show-guided-advanced");
   setProviderWizardStep(enabled ? 1 : 1);
+  renderProviderGuidance();
 }
 
 function renderDiagnosticReport(report) {
@@ -1343,7 +1378,7 @@ function resetProviderForm() {
   $("#presetId").value = "aliyun-bailian";
   $("#extraHeaders").value = "";
   $("#apiKey").placeholder = "粘贴 API Key";
-  $("#apiKeyHint").textContent = "密钥不会发送给 ModelBridge 以外的服务";
+  $("#apiKeyHint").textContent = "只粘贴平台生成的 Key，不要带说明文字";
   $("#deleteProviderBtn").hidden = true;
   $("#setupBanner").hidden = state.server.providers.length > 0;
   clearProviderFeedback();
@@ -1390,6 +1425,7 @@ function syncProviderForm() {
   const manual = document.querySelector('input[name="modelsMode"]:checked')?.value === "manual";
   $("#customHeaderField").hidden = authMode !== "custom";
   $("#apiKey").disabled = authMode === "none";
+  $("#apiKeyField").hidden = authMode === "none" && $("#providerForm").classList.contains("guided-preset");
   $("#manualModelsField").hidden = !manual;
   $("#testCostNote").hidden = false;
 }
@@ -1468,13 +1504,16 @@ async function testProvider() {
     if (result.overall === "needs_input") {
       const manualMode = document.querySelector('input[name="modelsMode"][value="manual"]');
       if (manualMode) manualMode.checked = true;
+      $("#providerForm").classList.add("show-guided-advanced");
       syncProviderForm();
+      renderProviderGuidance();
       providerFeedback("这个平台没有标准模型列表。请填写平台文档中的模型 ID，然后重新诊断。", true);
       $("#manualModels").focus();
       return;
     }
     if (result.overall === "fail") {
-      providerFeedback("连接尚未通过，请按诊断建议修正配置后重试。", true);
+      const failure = result.checks?.find(check => check.status === "fail");
+      providerFeedback(failure ? `${failure.summary}。${failure.suggestion || "请修正配置后重试"}` : "连接尚未通过，请按诊断建议修正配置后重试。", true);
       return;
     }
     if (result.observed?.modelSource === "fallback") {
@@ -1920,6 +1959,18 @@ function bindEvents() {
   $("#testProviderBtn").addEventListener("click", testProvider);
   $("#wizardNextBtn").addEventListener("click", continueProviderWizard);
   $("#wizardBackBtn").addEventListener("click", () => setProviderWizardStep(state.providerWizardStep === 3 ? 2 : 1));
+  $("#toggleProviderAdvancedBtn").addEventListener("click", () => {
+    $("#providerForm").classList.toggle("show-guided-advanced");
+    renderProviderGuidance();
+    syncProviderForm();
+  });
+  $("#restorePresetBtn").addEventListener("click", () => {
+    applyPreset();
+    clearProviderDiagnostic();
+    clearProviderFeedback();
+    toast("已恢复该平台的推荐配置；现在只需粘贴 API Key");
+    $("#apiKey").focus();
+  });
   $("#deleteProviderBtn").addEventListener("click", deleteProvider);
   $("#presetId").addEventListener("change", applyPreset);
   $("#authMode").addEventListener("change", syncProviderForm);

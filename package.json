@@ -1,6 +1,6 @@
 {
   "name": "modelbridge-local",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "private": true,
   "description": "A local-first chat client for OpenAI-compatible model APIs.",
   "type": "module",

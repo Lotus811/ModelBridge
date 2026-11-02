@@ -16,6 +16,13 @@ test("redacts credentials and URL secrets from diagnostic text", () => {
   assert.match(redacted, /example\.com\/v1\?%E2%80%A6|example\.com\/v1\?…/);
 });
 
+test("keeps human-readable Bearer labels and Chinese punctuation intact", () => {
+  const redacted = redactDiagnosticText("使用 https://api.deepseek.com，认证方式使用 Bearer Token");
+  assert.match(redacted, /api\.deepseek\.com/);
+  assert.match(redacted, /，认证方式使用 Bearer Token/);
+  assert.doesNotMatch(redacted, /xn--/);
+});
+
 test("classifies actionable provider failures", () => {
   assert.deepEqual(classifyDiagnosticError(Object.assign(new Error("bad key"), {status: 401})), {
     status: "fail",

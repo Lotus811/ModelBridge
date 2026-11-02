@@ -596,6 +596,35 @@ test("diagnosis requests a manual model when model discovery is optional and una
   assert.equal(chatRequests, 0);
 });
 
+test("diagnosis explains a DeepSeek Anthropic URL without contacting it", async t => {
+  const app = createAppServer({port: 0, config: {version: 1, activeProviderId: "", providers: []}});
+  const appPort = await listen(app.server);
+  t.after(() => close(app.server));
+  const body = JSON.stringify({
+    name: "DeepSeek",
+    presetId: "deepseek",
+    baseUrl: "https://api.deepseek.com/anthropic",
+    apiKey: "valid-key",
+    authMode: "api-key",
+    modelsMode: "auto"
+  });
+  let result;
+  try {
+    result = await request(appPort, {method: "POST", path: "/api/providers/diagnose", body});
+  } catch (error) {
+    if (error.code === "EACCES") {
+      t.skip("this environment blocks loopback client connections");
+      return;
+    }
+    throw error;
+  }
+  const report = JSON.parse(result.body);
+  assert.equal(result.status, 200);
+  assert.equal(report.overall, "fail");
+  assert.equal(report.checks.find(check => check.id === "protocol").status, "fail");
+  assert.match(report.checks.find(check => check.id === "protocol").suggestion, /Bearer Token/);
+});
+
 test("diagnosis continues with a manual fallback and never returns credentials", async t => {
   const secret = "diagnostic-secret-123456";
   let chatRequests = 0;

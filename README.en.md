@@ -35,6 +35,8 @@ Open <http://127.0.0.1:8000>. Windows users can double-click `启动聊天.bat`;
 
 The first launch opens provider setup. Saved credentials live in the git-ignored `config.local.json` file.
 
+With a built-in preset, beginners only need to paste the API key; ModelBridge configures the Base URL, authentication, and model discovery. Advanced fields remain available on demand, together with a one-click reset to the recommended configuration. In particular, the DeepSeek preset uses `https://api.deepseek.com`; its `/anthropic` URL is for the Anthropic Messages protocol and is rejected with a specific explanation here.
+
 ## Scope
 
 ModelBridge currently supports the OpenAI Chat Completions protocol. The official Gemini and Claude OpenAI compatibility layers work for core chat, subject to each vendor's documented limitations. Native Anthropic Messages, Gemini `generateContent`, image, audio, and video APIs still require separate adapters and are not represented as compatible when they are not.

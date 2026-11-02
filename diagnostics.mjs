@@ -23,9 +23,9 @@ export function redactDiagnosticText(value, secrets = []) {
     if (typeof secret === "string" && secret.length >= 4) text = text.split(secret).join("***");
   }
   text = text
-    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]{4,}/gi, "Bearer ***")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]{8,}/gi, "Bearer ***")
     .replace(/\b(?:sk|key|token)-[A-Za-z0-9._-]{8,}/gi, "***")
-    .replace(/https?:\/\/[^\s<>'\"]+/gi, redactUrl);
+    .replace(/https?:\/\/[A-Za-z0-9._~:/?#[\]@!$&()*+,;=%-]+/gi, redactUrl);
   return text.slice(0, MAX_DIAGNOSTIC_TEXT);
 }
 
