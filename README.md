@@ -9,7 +9,9 @@
 ## 功能
 
 - 多平台管理：同时保存多个 API 平台并快速切换
-- 内置预设：阿里云百炼、OpenAI、DeepSeek、OpenRouter、硅基流动、Ollama
+- 内置预设：阿里云百炼、OpenAI、DeepSeek、OpenRouter、硅基流动、Gemini/Claude 兼容层、Ollama
+- 三步接入向导：选择平台、执行真实最小调用诊断、确认后保存
+- 结构化兼容性诊断：区分认证、额度、网络、接口路径、模型发现、流式响应、Token 参数与用量返回问题
 - 自定义 OpenAI-compatible Base URL
 - 支持 Bearer、`x-api-key`、`api-key`、自定义认证头和无认证模式
 - 自动读取 `/models`，也可手动维护模型 ID
@@ -23,7 +25,7 @@
 - Token 用量统计：记录每次及累计输入、输出、缓存和总 Token
 - 模型能力自动适配中心：合并平台目录、内置规则、名称推断和用户覆盖
 - 自动识别旧版后台与端口占用，避免浏览器误连过期进程
-- 对话记录只保存在当前浏览器
+- 多会话历史：IndexedDB 本地保存、搜索、重命名、置顶和删除；自动迁移旧版单会话记录
 - API Key 只保存在本机后端，不进入浏览器状态或前端代码
 - 自动迁移旧版 `api.txt`
 - Windows 一键启动，macOS/Linux 启动脚本
@@ -52,7 +54,7 @@ chmod +x start-chat.sh
 node server.mjs
 ```
 
-浏览器打开 <http://127.0.0.1:8000>，在首次设置页面中选择平台、填写 Base URL 和 API Key，然后点击“测试连接”或“保存并使用”。
+浏览器打开 <http://127.0.0.1:8000>，在首次设置向导中选择平台、填写 Base URL 和 API Key，再执行连接诊断；只有核心聊天调用通过后才进入确认保存。
 
 如果 8000 端口被旧版 ModelBridge 占用，一键启动器会自动选择 8001–8010 中的空闲端口并打开正确版本。确认新版正常后，可以关闭旧的命令行窗口。
 
@@ -64,6 +66,8 @@ node server.mjs
 | 不提供 `/models` 的兼容 API | 支持 | 选择“手动填写模型” |
 | Azure 风格兼容端点 | 部分支持 | 在高级设置中填写自定义路径和 `api-key` 认证 |
 | Ollama 本地服务 | 支持 | 默认地址 `http://127.0.0.1:11434/v1` |
+| Gemini OpenAI 兼容层 | 支持基础聊天 | 使用 Google 官方兼容 Base URL；原生 Gemini 特性仍需独立适配 |
+| Claude OpenAI 兼容层 | 支持基础聊天 | 使用 Anthropic 官方兼容层；文件、缓存和完整思考能力有官方限制 |
 | 原生 Anthropic Messages API | 暂不支持 | 请求体和流式事件格式不同 |
 | 原生 Gemini API | 暂不支持 | 请求与响应协议不同 |
 | 图片输入 | 支持 | 使用 OpenAI-compatible `image_url`，需要视觉模型 |
@@ -79,6 +83,8 @@ node server.mjs
 - [OpenRouter](https://openrouter.ai/developers)
 - [硅基流动快速上手](https://docs.siliconflow.cn/docs/userguide/quickstart)
 - [Ollama OpenAI compatibility](https://docs.ollama.com/api/openai-compatibility)
+- [Gemini OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai/)
+- [Claude OpenAI SDK compatibility](https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk)
 
 ## 附件
 
@@ -115,11 +121,13 @@ node server.mjs
 
 每条消息右上角的“复制”按钮始终可见。复制助手回答时，剪贴板会同时写入原始 Markdown 和渲染后的 HTML：粘贴到 Word、邮件等富文本软件时保留标题、列表和表格；粘贴到记事本、VS Code、Obsidian 等纯文本编辑器时得到原始 Markdown。每个代码块右上角还提供“复制代码”。不支持多格式剪贴板的旧浏览器会自动回退为复制原始 Markdown。
 
-## 流式响应与对话备份
+## 流式响应、对话历史与备份
 
 流式响应使用标准 SSE 事件解析，能处理跨网络分块、BOM、注释、`CR`/`LF`/`CRLF` 换行以及多行 `data`。生成中可点击停止按钮；没有弹窗打开时，也可按 `Esc` 中止上游请求并保留已经收到的内容。
 
-聊天设置中的“对话数据”可导出 JSON 备份或便于阅读的 Markdown。JSON 可重新导入并恢复消息；导入会在确认后替换当前对话。导出仅包含对话文本、模型/平台标识、部分生成参数和附件元数据，**不会包含 API Key、附加请求头或图片/PDF 等附件二进制内容**。恢复后如需继续分析附件，必须重新添加原文件。
+每段非空对话会保存在当前浏览器的 IndexedDB 中，左侧可搜索、重命名、置顶或删除。升级时会把旧版 `localStorage` 单会话记录迁移一次；如果浏览器禁用 IndexedDB，则自动降级回单会话保存。对话历史不会写入后端配置，也不会上传。
+
+聊天设置中的“对话数据”可导出 JSON 备份或便于阅读的 Markdown。JSON 可重新导入为一段新对话。导出仅包含对话文本、模型/平台标识、部分生成参数和附件元数据，**不会包含 API Key、附加请求头或图片/PDF 等附件二进制内容**。恢复后如需继续分析附件，必须重新添加原文件。
 
 ## 本地配置
 
@@ -183,6 +191,7 @@ npm start
 ```text
 .
 ├── server.mjs             # 本地 HTTP 服务、配置管理和 API 代理
+├── diagnostics.mjs        # 平台诊断结果、错误分类与敏感信息脱敏
 ├── scripts/
 │   ├── check-runtime.mjs   # 检查 Node.js 运行时版本
 │   └── choose-port.mjs     # 识别当前版本并选择可用本机端口
@@ -194,6 +203,7 @@ npm start
 │   ├── markdown.js        # 安全 Markdown 渲染
 │   ├── sse.js             # 标准 SSE 流解析与响应增量提取
 │   ├── conversation.js    # 对话导入、导出与格式校验
+│   ├── storage.js         # IndexedDB 多会话仓库与元数据
 │   └── app.js             # 前端状态、配置与聊天逻辑
 ├── test/                  # 配置、安全与 DOCX 解析测试
 ├── config.example.json    # 无真实密钥的配置示例

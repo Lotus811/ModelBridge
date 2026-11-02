@@ -15,6 +15,20 @@
         <div><strong>ModelBridge</strong><small>Local API Workspace</small></div>
       </div>
 
+      <section class="conversation-section" aria-label="对话历史">
+        <div class="section-label-row">
+          <label class="section-label" for="conversationSearch">对话</label>
+          <button id="newConversationBtn" class="text-btn" type="button">＋ 新建</button>
+        </div>
+        <div class="conversation-search-wrap">
+          <span aria-hidden="true">⌕</span>
+          <input id="conversationSearch" class="search conversation-search" type="search" autocomplete="off" placeholder="搜索历史">
+        </div>
+        <div id="conversationList" class="conversation-list" aria-live="polite">
+          <div class="loading-line"><i></i>正在读取…</div>
+        </div>
+      </section>
+
       <section class="provider-picker" aria-label="模型平台">
         <div class="section-label-row">
           <label class="section-label" for="providerSelect">模型平台</label>
@@ -108,49 +122,67 @@
 
         <form id="providerForm" class="provider-form">
           <input id="providerId" type="hidden">
-          <div id="setupBanner" class="setup-banner" hidden>
-            <strong>欢迎使用 ModelBridge</strong>
-            <span>先添加一个 OpenAI 兼容平台，保存后即可开始聊天。</span>
-          </div>
+          <ol id="providerWizardSteps" class="wizard-steps" aria-label="添加平台步骤">
+            <li data-wizard-step-indicator="1"><span>1</span>选择平台</li>
+            <li data-wizard-step-indicator="2"><span>2</span>连接诊断</li>
+            <li data-wizard-step-indicator="3"><span>3</span>确认保存</li>
+          </ol>
 
-          <div class="form-grid two-columns">
-            <label class="field"><span>平台预设</span><select id="presetId" class="select"></select><small id="presetHint"></small></label>
-            <label class="field"><span>显示名称</span><input id="providerName" type="text" maxlength="100" placeholder="例如：我的百炼 API" required></label>
-          </div>
-
-          <label class="field"><span>Base URL</span><input id="baseUrl" type="url" spellcheck="false" placeholder="https://example.com/v1" required><small>填写到版本路径，例如 <code>https://example.com/v1</code></small></label>
-
-          <div class="form-grid key-grid">
-            <label class="field"><span>API Key</span><div class="password-wrap"><input id="apiKey" type="password" autocomplete="new-password" placeholder="粘贴 API Key"><button id="toggleKeyBtn" type="button" aria-label="显示或隐藏 API Key">显示</button></div><small id="apiKeyHint">密钥不会发送给 ModelBridge 以外的服务</small></label>
-            <label class="field compact-field"><span>认证方式</span><select id="authMode" class="select"><option value="bearer">Bearer Token</option><option value="x-api-key">x-api-key</option><option value="api-key">api-key</option><option value="custom">自定义请求头</option><option value="none">无需认证</option></select></label>
-          </div>
-
-          <label id="customHeaderField" class="field" hidden><span>自定义认证请求头</span><input id="apiKeyHeader" type="text" placeholder="例如 X-API-Key"></label>
-
-          <fieldset class="model-mode-fieldset">
-            <legend>模型列表</legend>
-            <label class="radio-card"><input type="radio" name="modelsMode" value="auto" checked><span><b>自动读取</b><small>调用平台的 <code>/models</code> 接口</small></span></label>
-            <label class="radio-card"><input type="radio" name="modelsMode" value="manual"><span><b>手动填写</b><small>适合不提供模型列表的平台</small></span></label>
-          </fieldset>
-
-          <label id="manualModelsField" class="field" hidden><span>模型 ID（每行一个）</span><textarea id="manualModels" rows="4" placeholder="model-name-1&#10;model-name-2"></textarea></label>
-          <label class="field"><span>默认模型（可选）</span><input id="defaultModel" type="text" spellcheck="false" placeholder="留空则自动选择"></label>
-
-          <details class="advanced">
-            <summary>高级设置</summary>
-            <div class="form-grid two-columns">
-              <label class="field"><span>模型列表路径</span><input id="modelsPath" type="text" spellcheck="false" value="/models"></label>
-              <label class="field"><span>聊天接口路径</span><input id="chatPath" type="text" spellcheck="false" value="/chat/completions"></label>
+          <section class="wizard-panel" data-wizard-panel="1">
+            <div id="setupBanner" class="setup-banner" hidden>
+              <strong>欢迎使用 ModelBridge</strong>
+              <span>三步完成接入；检测只会发送一个要求回复“OK”的最小请求。</span>
             </div>
-            <label class="field"><span>附加请求头（JSON，可选）</span><textarea id="extraHeaders" rows="3" spellcheck="false" placeholder='{"HTTP-Referer":"https://example.com","X-Title":"My App"}'></textarea></label>
-          </details>
+            <div id="presetQuickGrid" class="preset-quick-grid" aria-label="常用平台"></div>
+            <div class="form-grid two-columns provider-identity-grid">
+              <label class="field preset-select-field"><span>平台预设</span><select id="presetId" class="select"></select><small id="presetHint"></small></label>
+              <label class="field"><span>显示名称</span><input id="providerName" type="text" maxlength="100" placeholder="例如：我的百炼 API" required></label>
+            </div>
+          </section>
 
-          <div id="providerFeedback" class="feedback" hidden></div>
-          <p id="testCostNote" class="test-note">连接测试会先读取模型列表，再要求模型只回复“OK”，通常只生成几个 Token。部分推理模型要求设置较高输出上限，但仍按实际生成量计费。</p>
+          <section class="wizard-panel" data-wizard-panel="2">
+            <label class="field"><span>Base URL</span><input id="baseUrl" type="url" spellcheck="false" placeholder="https://example.com/v1" required><small>填写到版本路径，例如 <code>https://example.com/v1</code></small></label>
+
+            <div class="form-grid key-grid">
+              <label class="field"><span>API Key</span><div class="password-wrap"><input id="apiKey" type="password" autocomplete="new-password" placeholder="粘贴 API Key"><button id="toggleKeyBtn" type="button" aria-label="显示或隐藏 API Key">显示</button></div><small id="apiKeyHint">密钥不会发送给 ModelBridge 以外的服务</small></label>
+              <label class="field compact-field"><span>认证方式</span><select id="authMode" class="select"><option value="bearer">Bearer Token</option><option value="x-api-key">x-api-key</option><option value="api-key">api-key</option><option value="custom">自定义请求头</option><option value="none">无需认证</option></select></label>
+            </div>
+
+            <label id="customHeaderField" class="field" hidden><span>自定义认证请求头</span><input id="apiKeyHeader" type="text" placeholder="例如 X-API-Key"></label>
+
+            <fieldset class="model-mode-fieldset">
+              <legend>模型列表</legend>
+              <label class="radio-card"><input type="radio" name="modelsMode" value="auto" checked><span><b>自动读取</b><small>调用平台的 <code>/models</code> 接口</small></span></label>
+              <label class="radio-card"><input type="radio" name="modelsMode" value="manual"><span><b>手动填写</b><small>适合不提供模型列表的平台</small></span></label>
+            </fieldset>
+
+            <label id="manualModelsField" class="field" hidden><span>模型 ID（每行一个）</span><textarea id="manualModels" rows="4" placeholder="model-name-1&#10;model-name-2"></textarea></label>
+            <label class="field"><span>默认模型（可选）</span><input id="defaultModel" type="text" spellcheck="false" placeholder="留空则自动选择"></label>
+
+            <details class="advanced">
+              <summary>高级设置</summary>
+              <div class="form-grid two-columns">
+                <label class="field"><span>模型列表路径</span><input id="modelsPath" type="text" spellcheck="false" value="/models"></label>
+                <label class="field"><span>聊天接口路径</span><input id="chatPath" type="text" spellcheck="false" value="/chat/completions"></label>
+              </div>
+              <label class="field"><span>附加请求头（JSON，可选）</span><textarea id="extraHeaders" rows="3" spellcheck="false" placeholder='{"HTTP-Referer":"https://example.com","X-Title":"My App"}'></textarea></label>
+            </details>
+
+            <div id="providerFeedback" class="feedback" hidden></div>
+            <div id="diagnosticReport" class="diagnostic-report" hidden aria-live="polite"></div>
+            <p id="testCostNote" class="test-note">诊断会读取模型列表并要求模型只回复“OK”，通常只生成几个 Token；报告不会包含 API Key。</p>
+          </section>
+
+          <section class="wizard-panel" data-wizard-panel="3" hidden>
+            <div id="providerSummary" class="provider-summary"></div>
+          </section>
+
           <footer class="form-actions">
             <button id="deleteProviderBtn" class="danger-btn" type="button" hidden>删除</button>
             <span></span>
-            <button id="testProviderBtn" class="secondary-btn" type="button">测试连接</button>
+            <button id="wizardBackBtn" class="secondary-btn" type="button" hidden>上一步</button>
+            <button id="wizardNextBtn" class="primary-btn" type="button" hidden>下一步</button>
+            <button id="testProviderBtn" class="secondary-btn" type="button">开始诊断</button>
             <button id="saveProviderBtn" class="primary-btn" type="submit">保存并使用</button>
           </footer>
         </form>

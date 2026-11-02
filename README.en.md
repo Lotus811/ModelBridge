@@ -5,11 +5,14 @@ ModelBridge is a local-first, dependency-free chat client for OpenAI-compatible 
 ## Highlights
 
 - Multiple local provider profiles
-- Presets for Alibaba Cloud Model Studio, OpenAI, DeepSeek, OpenRouter, SiliconFlow, and Ollama
+- Presets for Alibaba Cloud Model Studio, OpenAI, DeepSeek, OpenRouter, SiliconFlow, the Gemini/Claude compatibility layers, and Ollama
+- A three-step onboarding flow with a real minimal chat probe before saving
+- Structured diagnostics for authentication, quota, networking, model discovery, streaming, token-limit parameters, and usage reporting
 - Automatic `/models` discovery with a manual model-list fallback
 - Standards-compliant SSE streaming, stop-button or `Esc` cancellation, reasoning display, and safe Markdown rendering
 - One-click dual-format copy: rich text for Word/email, raw Markdown for text editors, plus per-code-block copy
 - Conversation export to JSON/Markdown and message restore from ModelBridge JSON backups
+- IndexedDB multi-conversation history with search, rename, pin, delete, and one-time migration from the legacy single conversation
 - Automatic retry when a model rejects an unsupported optional parameter
 - Automatic compatibility between modern `max_completion_tokens` and common `max_tokens` endpoints
 - Stale-backend detection and automatic local-port selection
@@ -34,7 +37,7 @@ The first launch opens provider setup. Saved credentials live in the git-ignored
 
 ## Scope
 
-ModelBridge currently supports the OpenAI Chat Completions protocol. Native Anthropic Messages, Gemini `generateContent`, image, audio, and video APIs require separate adapters and are not represented as compatible when they are not.
+ModelBridge currently supports the OpenAI Chat Completions protocol. The official Gemini and Claude OpenAI compatibility layers work for core chat, subject to each vendor's documented limitations. Native Anthropic Messages, Gemini `generateContent`, image, audio, and video APIs still require separate adapters and are not represented as compatible when they are not.
 
 Images are sent as Base64 `image_url` content parts and PDFs as `file` content parts. DOCX, text, and code files are read locally and sent as text context, so DOCX does not require native file support from the provider. Paragraphs, table text, headers, footers, and notes are extracted; complex layout, comments, charts, and embedded images are not preserved. Legacy `.doc` files must first be saved as `.docx`. Support for image and PDF inputs still depends on the selected provider and model. Alibaba Cloud's hosted Kimi models accept public image URLs rather than local Base64 images, so the client blocks that unsupported combination. Encoded attachments are capped at 24 MB and the complete request at 31 MB. Attachment bytes remain in page memory and are not persisted after a reload.
 
@@ -50,11 +53,13 @@ Assistant messages render headings, emphasis, strikethrough, quotes, ordered/uno
 
 The message copy action writes both the original Markdown and rendered HTML when the browser supports multi-format clipboard data. Rich-text applications such as Word retain formatting, while text editors receive the Markdown source. Older browsers fall back to plain Markdown. Code blocks also have a dedicated copy action.
 
-## Streaming and conversation backups
+## Streaming, local history, and conversation backups
 
 The streaming parser follows SSE event framing and handles arbitrary network chunk boundaries, BOMs, comments, `CR`/`LF`/`CRLF` line endings, and multiline `data` fields. While generation is active, use the stop button or press `Esc` when no modal is open; the browser aborts the upstream request and keeps content already received.
 
-The “Conversation data” controls export a restorable JSON backup or a readable Markdown transcript. Importing JSON replaces the current messages after confirmation. Exports contain conversation text, provider/model identifiers, selected generation metadata, and attachment metadata only; they **never contain API keys, extra request headers, or image/PDF attachment bytes**. Reattach the original files if a restored conversation needs them again.
+Non-empty conversations are stored in the current browser's IndexedDB. The sidebar can search, rename, pin, and delete them, and the legacy `localStorage` conversation is migrated once. If IndexedDB is unavailable, ModelBridge falls back to the original single-conversation storage path. History never enters the backend configuration or leaves the browser.
+
+The “Conversation data” controls export a restorable JSON backup or a readable Markdown transcript. Importing JSON creates a new local conversation. Exports contain conversation text, provider/model identifiers, selected generation metadata, and attachment metadata only; they **never contain API keys, extra request headers, or image/PDF attachment bytes**. Reattach the original files if a restored conversation needs them again.
 
 ## Development
 

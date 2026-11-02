@@ -198,6 +198,56 @@ test("closing the browser request aborts an upstream request before response hea
   ]);
 });
 
+test("closing a provider diagnosis aborts its in-flight probe", async t => {
+  let upstreamStartedResolve;
+  let upstreamClosedResolve;
+  const upstreamStarted = new Promise(resolve => { upstreamStartedResolve = resolve; });
+  const upstreamClosed = new Promise(resolve => { upstreamClosedResolve = resolve; });
+  const upstream = http.createServer(async (req, res) => {
+    for await (const _chunk of req) {}
+    upstreamStartedResolve();
+    res.once("close", upstreamClosedResolve);
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const app = createAppServer({port: 0, config: {version: 1, activeProviderId: "", providers: []}});
+  const appPort = await listen(app.server);
+  t.after(() => close(app.server));
+  const body = JSON.stringify({
+    name: "Slow diagnosis",
+    presetId: "custom",
+    baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+    authMode: "none",
+    modelsMode: "manual",
+    manualModels: "slow-model"
+  });
+  const client = http.request({
+    host: "127.0.0.1",
+    port: appPort,
+    path: "/api/providers/diagnose",
+    method: "POST",
+    headers: {Host: `127.0.0.1:${appPort}`, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body)}
+  });
+  const clientError = new Promise(resolve => client.once("error", resolve));
+  client.end(body);
+  const started = await Promise.race([
+    upstreamStarted.then(() => true),
+    clientError.then(error => {
+      if (error.code === "EACCES") return false;
+      throw error;
+    })
+  ]);
+  if (!started) {
+    t.skip("this environment blocks loopback client connections");
+    return;
+  }
+  client.destroy();
+  await Promise.race([
+    upstreamClosed,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("diagnosis probe was not aborted")), 2_000))
+  ]);
+});
+
 test("normalizes pretty-printed non-stream JSON into a single SSE data event", async t => {
   const upstream = http.createServer(async (req, res) => {
     for await (const _chunk of req) {}
@@ -501,4 +551,136 @@ test("bounds the cumulative Alibaba Cloud model catalog", async t => {
   assert.equal(result.status, 200);
   assert.deepEqual(data.data.map(model => model.id), ["chat-model"]);
   assert.match(data.warning, /目录条目过多/);
+});
+
+test("diagnosis requests a manual model when model discovery is optional and unavailable", async t => {
+  let chatRequests = 0;
+  const upstream = http.createServer(async (req, res) => {
+    for await (const _chunk of req) {}
+    if (req.method === "GET") {
+      res.writeHead(404, {"Content-Type": "application/json"});
+      res.end(JSON.stringify({error: {message: "models endpoint missing"}}));
+      return;
+    }
+    chatRequests += 1;
+    res.writeHead(500).end();
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const app = createAppServer({port: 0, config: {version: 1, activeProviderId: "", providers: []}});
+  const appPort = await listen(app.server);
+  t.after(() => close(app.server));
+  const body = JSON.stringify({
+    name: "No models endpoint",
+    presetId: "custom",
+    baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+    authMode: "none",
+    modelsMode: "auto"
+  });
+
+  let result;
+  try {
+    result = await request(appPort, {method: "POST", path: "/api/providers/diagnose", body});
+  } catch (error) {
+    if (error.code === "EACCES") {
+      t.skip("this environment blocks loopback client connections");
+      return;
+    }
+    throw error;
+  }
+  const report = JSON.parse(result.body);
+  assert.equal(result.status, 200);
+  assert.equal(report.overall, "needs_input");
+  assert.ok(Number.isInteger(report.durationMs));
+  assert.equal(report.checks.find(check => check.id === "models").status, "needs_input");
+  assert.equal(chatRequests, 0);
+});
+
+test("diagnosis continues with a manual fallback and never returns credentials", async t => {
+  const secret = "diagnostic-secret-123456";
+  let chatRequests = 0;
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    if (req.method === "GET") {
+      res.writeHead(404, {"Content-Type": "application/json"});
+      res.end(JSON.stringify({error: {message: `missing for ${secret}`}}));
+      return;
+    }
+    chatRequests += 1;
+    res.writeHead(200, {"Content-Type": "text/event-stream"});
+    res.end(`data: ${JSON.stringify({choices: [{delta: {content: "OK"}, finish_reason: "stop"}]})}\n\ndata: ${JSON.stringify({choices: [], usage: {prompt_tokens: 1, completion_tokens: 1, total_tokens: 2}})}\n\ndata: [DONE]\n\n`);
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const app = createAppServer({port: 0, config: {version: 1, activeProviderId: "", providers: []}});
+  const appPort = await listen(app.server);
+  t.after(() => close(app.server));
+  const body = JSON.stringify({
+    name: "Fallback models",
+    presetId: "custom",
+    baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+    apiKey: secret,
+    authMode: "bearer",
+    modelsMode: "auto",
+    manualModels: "fallback-chat"
+  });
+
+  let result;
+  try {
+    result = await request(appPort, {method: "POST", path: "/api/providers/diagnose", body});
+  } catch (error) {
+    if (error.code === "EACCES") {
+      t.skip("this environment blocks loopback client connections");
+      return;
+    }
+    throw error;
+  }
+  const report = JSON.parse(result.body);
+  assert.equal(result.status, 200);
+  assert.equal(report.overall, "partial");
+  assert.equal(report.observed.testedModel, "fallback-chat");
+  assert.equal(report.observed.streaming, true);
+  assert.equal(report.observed.usageAvailable, true);
+  assert.equal(report.checks.find(check => check.id === "models").status, "warning");
+  assert.equal(chatRequests, 1);
+  assert.doesNotMatch(result.body, new RegExp(secret));
+});
+
+test("diagnosis reports authentication failures as structured redacted checks", async t => {
+  const secret = "bad-secret-123456";
+  const upstream = http.createServer(async (req, res) => {
+    for await (const _chunk of req) {}
+    res.writeHead(401, {"Content-Type": "application/json"});
+    res.end(JSON.stringify({error: {message: `invalid ${secret}`}}));
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const app = createAppServer({port: 0, config: {version: 1, activeProviderId: "", providers: []}});
+  const appPort = await listen(app.server);
+  t.after(() => close(app.server));
+  const body = JSON.stringify({
+    name: "Bad auth",
+    presetId: "custom",
+    baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+    apiKey: secret,
+    authMode: "bearer",
+    modelsMode: "auto"
+  });
+
+  let result;
+  try {
+    result = await request(appPort, {method: "POST", path: "/api/providers/diagnose", body});
+  } catch (error) {
+    if (error.code === "EACCES") {
+      t.skip("this environment blocks loopback client connections");
+      return;
+    }
+    throw error;
+  }
+  const report = JSON.parse(result.body);
+  assert.equal(result.status, 200);
+  assert.equal(report.overall, "fail");
+  assert.equal(report.checks.find(check => check.id === "models").summary, "认证失败");
+  assert.doesNotMatch(result.body, new RegExp(secret));
 });

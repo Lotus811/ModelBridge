@@ -1,12 +1,12 @@
 {
   "name": "modelbridge-local",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "private": true,
   "description": "A local-first chat client for OpenAI-compatible model APIs.",
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check scripts/check-runtime.mjs && node --check scripts/choose-port.mjs && node --check web/docx.js && node --check web/usage.js && node --check web/markdown.js && node --check web/sse.js && node --check web/conversation.js && node --check web/app.js",
+    "check": "node --check server.mjs && node --check diagnostics.mjs && node --check scripts/check-runtime.mjs && node --check scripts/choose-port.mjs && node --check web/docx.js && node --check web/usage.js && node --check web/markdown.js && node --check web/sse.js && node --check web/conversation.js && node --check web/storage.js && node --check web/app.js",
     "test": "node --test"
   },
   "engines": {

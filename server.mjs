@@ -3,11 +3,19 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
+import {
+  buildDiagnosticReport,
+  classifyDiagnosticError,
+  diagnosticCheck,
+  diagnosticSecrets,
+  redactDiagnosticText
+} from "./diagnostics.mjs";
+import {createSseParser} from "./web/sse.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(ROOT, "config.local.json");
 const LEGACY_CONFIG_PATH = path.join(ROOT, "api.txt");
-const APP_VERSION = "1.8.0";
+const APP_VERSION = "1.9.0";
 const CONFIG_VERSION = 1;
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_CONTEXT_TEXT_CHARS = 240_000;
@@ -71,6 +79,24 @@ export const PROVIDER_PRESETS = Object.freeze([
     modelsPath: "/models",
     chatPath: "/chat/completions",
     hint: "SiliconFlow 中国站"
+  },
+  {
+    id: "gemini",
+    name: "Google Gemini（OpenAI 兼容）",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    authMode: "bearer",
+    modelsPath: "/models",
+    chatPath: "/chat/completions",
+    hint: "适合基础聊天；Gemini 原生高级能力需要独立适配"
+  },
+  {
+    id: "anthropic",
+    name: "Anthropic Claude（OpenAI 兼容）",
+    baseUrl: "https://api.anthropic.com/v1",
+    authMode: "bearer",
+    modelsPath: "/models",
+    chatPath: "/chat/completions",
+    hint: "适合基础聊天；Claude 原生文件与缓存能力需要独立适配"
   },
   {
     id: "ollama",
@@ -515,6 +541,17 @@ function buildHeaders(provider) {
   return headers;
 }
 
+function timedSignal(signal, milliseconds) {
+  const timeout = AbortSignal.timeout(milliseconds);
+  if (!signal) return timeout;
+  if (typeof AbortSignal.any === "function") return AbortSignal.any([signal, timeout]);
+  const controller = new AbortController();
+  const abort = event => controller.abort(event.target.reason);
+  signal.addEventListener("abort", abort, {once: true});
+  timeout.addEventListener("abort", abort, {once: true});
+  return controller.signal;
+}
+
 async function remoteFetch(provider, endpointPath, options = {}) {
   return fetch(endpointUrl(provider, endpointPath), {
     ...options,
@@ -730,7 +767,10 @@ async function readRemoteError(response, provider, onChunk = null) {
     404: "接口路径或模型不存在",
     429: "请求过于频繁或已触发额度限制"
   }[response.status] || (response.status >= 500 ? "模型平台暂时不可用" : "请求失败");
-  return new Error(`${friendly}（HTTP ${response.status}）${detail ? `：${detail}` : ""}`);
+  const error = new Error(`${friendly}（HTTP ${response.status}）${detail ? `：${detail}` : ""}`);
+  error.status = response.status;
+  error.code = "UPSTREAM_HTTP";
+  return error;
 }
 
 function remoteModelsCacheKey(provider) {
@@ -747,8 +787,8 @@ function cachedRemoteModels(provider, freshOnly = false) {
   return cached.ids;
 }
 
-async function fetchRemoteModels(provider, {cache = true} = {}) {
-  const response = await remoteFetch(provider, provider.modelsPath, {method: "GET", signal: AbortSignal.timeout(30_000)});
+async function fetchRemoteModels(provider, {cache = true, signal = null} = {}) {
+  const response = await remoteFetch(provider, provider.modelsPath, {method: "GET", signal: timedSignal(signal, 30_000)});
   if (!response.ok) throw await readRemoteError(response, provider);
   const data = await readResponseJson(response, MAX_MODEL_LIST_BYTES, "模型列表响应");
   const ids = extractModelIds(data);
@@ -875,10 +915,35 @@ async function loadModels(provider) {
   return {ids, source, warning, catalog};
 }
 
-async function probeProvider(provider) {
-  const ids = provider.modelsMode === "auto" ? await fetchRemoteModels(provider, {cache: false}) : provider.manualModels;
-  const model = provider.defaultModel || ids.find(id => modelCapabilities(id, provider).chat) || ids[0];
-  if (!model) throw new Error("没有可以用于实际调用测试的模型");
+function inspectProbeSse(raw) {
+  let validChunk = false;
+  let usageAvailable = false;
+  let doneSeen = false;
+  const parser = createSseParser(event => {
+    if (!["message", "error"].includes(event.type)) return true;
+    const value = event.data.trim();
+    if (!value) return true;
+    if (value === "[DONE]") {
+      doneSeen = true;
+      return false;
+    }
+    let payload;
+    try { payload = JSON.parse(value); }
+    catch { throw new Error("平台已响应，但流式返回包含无法解析的数据"); }
+    if (event.type === "error" || payload.error) {
+      const detail = payload.error;
+      throw new Error(typeof detail === "string" ? detail : detail?.message || payload.message || "平台返回流式错误");
+    }
+    if (Array.isArray(payload?.choices)) validChunk = true;
+    if (payload?.usage && typeof payload.usage === "object") usageAvailable = true;
+    return true;
+  });
+  parser.push(raw);
+  parser.finish();
+  return {validChunk, usageAvailable, doneSeen};
+}
+
+async function probeChat(provider, model, {signal = null} = {}) {
   const probeMaxTokens = effectiveMaxTokens(model, modelProfile(model, provider), isKimiK3ReasoningModel(model) ? 64 : 16);
   const payload = {
     model,
@@ -894,7 +959,7 @@ async function probeProvider(provider) {
     response = await remoteFetch(provider, provider.chatPath, {
       method: "POST",
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(60_000)
+      signal: timedSignal(signal, 60_000)
     });
     if (response.ok) break;
     const error = await readRemoteError(response, provider);
@@ -908,27 +973,156 @@ async function probeProvider(provider) {
   }
   if (!response?.ok) throw new Error("模型不接受连接测试使用的输出 Token 参数");
   const contentType = response.headers.get("content-type") || "";
+  let usageAvailable = false;
+  let doneSeen = false;
   if (contentType.includes("text/event-stream")) {
     const raw = await readResponseText(response, MAX_PROBE_RESPONSE_BYTES, "连接测试响应");
-    const validChunk = raw.split(/\r?\n/).some(line => {
-      if (!line.startsWith("data:")) return false;
-      const value = line.slice(5).trim();
-      if (!value || value === "[DONE]") return false;
-      try { return Array.isArray(JSON.parse(value)?.choices); }
-      catch { return false; }
-    });
-    if (!validChunk) throw new Error("平台已响应，但流式返回格式不是 OpenAI Chat Completions SSE");
+    const inspected = inspectProbeSse(raw);
+    usageAvailable = inspected.usageAvailable;
+    doneSeen = inspected.doneSeen;
+    if (!inspected.validChunk) throw new Error("平台已响应，但流式返回格式不是 OpenAI Chat Completions SSE");
   } else {
     const data = await readResponseJson(response, MAX_NON_STREAM_RESPONSE_BYTES, "连接测试响应");
     if (!data?.choices?.length) throw new Error("平台已响应，但返回格式不是 OpenAI Chat Completions");
+    usageAvailable = Boolean(data.usage && typeof data.usage === "object");
   }
+  const outputTokenParameter = Object.hasOwn(payload, "max_completion_tokens")
+    ? "max_completion_tokens"
+    : Object.hasOwn(payload, "max_tokens") ? "max_tokens" : "";
+  return {
+    testedModel: model,
+    streaming: contentType.includes("text/event-stream"),
+    usageAvailable,
+    doneSeen,
+    outputTokenParameter,
+    rejectedParameters: [...rejectedParameters]
+  };
+}
+
+async function probeProvider(provider) {
+  const ids = provider.modelsMode === "auto" ? await fetchRemoteModels(provider, {cache: false}) : provider.manualModels;
+  const model = provider.defaultModel || ids.find(id => modelCapabilities(id, provider).chat) || ids[0];
+  if (!model) throw new Error("没有可以用于实际调用测试的模型");
+  const result = await probeChat(provider, model);
   return {
     ok: true,
     method: "chat",
     count: ids.length,
-    testedModel: model,
+    ...result,
     message: `连接成功：读取到 ${ids.length} 个模型，并已实际调用 ${model}`
   };
+}
+
+function diagnosticFailureCheck(id, error, stage, secrets, options = {}) {
+  const failure = classifyDiagnosticError(error, stage, secrets);
+  return diagnosticCheck(id, options.status || failure.status, options.summary || failure.summary, {
+    detail: failure.detail,
+    suggestion: options.suggestion || failure.suggestion,
+    durationMs: options.durationMs
+  });
+}
+
+async function diagnoseProvider(provider, {signal = null} = {}) {
+  const startedAt = now();
+  const started = Date.now();
+  const checks = [diagnosticCheck("configuration", "pass", "平台配置格式有效", {
+    detail: `${provider.protocol} · ${provider.authMode === "none" ? "无需认证" : "已配置认证"}`
+  })];
+  const observed = {};
+  const secrets = diagnosticSecrets(provider);
+  let ids = [];
+  let modelSource = provider.modelsMode;
+  const finishReport = () => {
+    const report = buildDiagnosticReport({provider, checks, observed, startedAt});
+    report.durationMs = Date.now() - started;
+    return report;
+  };
+
+  if (provider.modelsMode === "manual") {
+    ids = provider.manualModels;
+    checks.push(diagnosticCheck("models", "pass", `使用 ${ids.length} 个手动模型 ID`, {
+      suggestion: "手动模型不会调用 /models；请在模型下线或更名后及时更新"
+    }));
+  } else {
+    const modelStarted = Date.now();
+    try {
+      ids = await fetchRemoteModels(provider, {cache: false, signal});
+      modelSource = "remote";
+      checks.push(diagnosticCheck("models", "pass", `标准模型列表可用，共发现 ${ids.length} 个模型`, {
+        durationMs: Date.now() - modelStarted
+      }));
+    } catch (error) {
+      const fallbackIds = [...new Set([provider.defaultModel, ...provider.manualModels].filter(Boolean))];
+      const failure = classifyDiagnosticError(error, "models", secrets);
+      const canUseManualModel = fallbackIds.length > 0;
+      const modelListOptional = ["not_found", "method_not_allowed", "format"].includes(failure.code)
+        || /空模型列表|empty model|模型列表响应/i.test(error.message || "");
+      if (canUseManualModel) {
+        ids = fallbackIds;
+        modelSource = "fallback";
+        checks.push(diagnosticFailureCheck("models", error, "models", secrets, {
+          status: "warning",
+          summary: `自动读取模型失败，改用 ${ids.length} 个手动模型 ID`,
+          suggestion: "聊天接口仍会继续验证；保存时建议使用手动模型模式",
+          durationMs: Date.now() - modelStarted
+        }));
+      } else if (modelListOptional) {
+        checks.push(diagnosticFailureCheck("models", error, "models", secrets, {
+          status: "needs_input",
+          summary: "无法自动发现模型，需要手动填写模型 ID",
+          suggestion: "填写平台文档中的模型 ID 后重新检测；/models 缺失不代表聊天接口不兼容",
+          durationMs: Date.now() - modelStarted
+        }));
+        observed.modelSource = "unavailable";
+        return finishReport();
+      } else {
+        checks.push(diagnosticFailureCheck("models", error, "models", secrets, {durationMs: Date.now() - modelStarted}));
+        observed.modelSource = "unavailable";
+        return finishReport();
+      }
+    }
+  }
+
+  observed.modelSource = modelSource;
+  observed.modelCount = ids.length;
+  const model = provider.defaultModel || ids.find(id => modelCapabilities(id, provider).chat) || ids[0];
+  if (!model) {
+    checks.push(diagnosticCheck("model_selection", "needs_input", "没有可用于聊天测试的模型", {
+      suggestion: "手动填写一个支持 Chat Completions 的文本或多模态模型 ID"
+    }));
+    return finishReport();
+  }
+
+  const chatStarted = Date.now();
+  try {
+    const result = await probeChat(provider, model, {signal});
+    Object.assign(observed, result);
+    checks.push(diagnosticCheck("chat", result.streaming ? "pass" : "warning", result.streaming
+      ? "Chat Completions 与 SSE 流式响应可用"
+      : "Chat Completions 可用，但平台返回的是非流式响应", {
+      detail: `已用 ${model} 完成最小回复测试`,
+      suggestion: result.streaming ? "" : "ModelBridge 会把非流式 JSON 转换后显示，但不会逐字输出",
+      durationMs: Date.now() - chatStarted
+    }));
+    checks.push(diagnosticCheck("output_tokens", "pass", result.outputTokenParameter
+      ? `输出上限参数使用 ${result.outputTokenParameter}`
+      : "平台不接受输出上限参数，已在测试中省略", {
+      detail: result.rejectedParameters.length ? `已拒绝：${result.rejectedParameters.join("、")}` : "未触发参数回退"
+    }));
+    checks.push(diagnosticCheck("usage", result.usageAvailable ? "pass" : "skipped", result.usageAvailable
+      ? "平台返回 Token 用量"
+      : "本次测试未返回 Token 用量"));
+    checks.push(diagnosticCheck("capabilities", "skipped", "未主动测试图片、PDF 与工具调用", {
+      suggestion: "这些能力应以官方目录、模型档案或用户覆盖设置为准"
+    }));
+  } catch (error) {
+    const safeError = new Error(redactDiagnosticText(error.message, secrets), {cause: error.cause});
+    safeError.status = error.status;
+    safeError.code = error.code;
+    checks.push(diagnosticFailureCheck("chat", safeError, "chat", secrets, {durationMs: Date.now() - chatStarted}));
+  }
+
+  return finishReport();
 }
 
 function securityHeaders(res) {
@@ -1368,6 +1562,25 @@ export function createAppServer(options = {}) {
         const existing = data.id ? providerById(config, data.id) : null;
         const provider = normalizeProvider(data, existing);
         return sendJson(res, 200, await probeProvider(provider));
+      }
+
+      if (req.method === "POST" && pathname === "/api/providers/diagnose") {
+        const data = await readJson(req);
+        const existing = data.id ? providerById(config, data.id) : null;
+        if (data.id && !existing) return sendJson(res, 404, {error: {message: "要检测的平台不存在"}});
+        const provider = normalizeProvider(data, existing);
+        const controller = new AbortController();
+        const abortDiagnosis = () => controller.abort(new Error("客户端已取消平台诊断"));
+        req.once("aborted", abortDiagnosis);
+        res.once("close", abortDiagnosis);
+        try {
+          const report = await diagnoseProvider(provider, {signal: controller.signal});
+          if (!res.destroyed) return sendJson(res, 200, report);
+        } finally {
+          req.off("aborted", abortDiagnosis);
+          res.off("close", abortDiagnosis);
+        }
+        return undefined;
       }
 
       if (req.method === "POST" && pathname === "/api/providers") {

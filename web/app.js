@@ -3,8 +3,9 @@ import {normalizeUsage, summarizeUsage} from "./usage.js";
 import {renderMarkdownInto} from "./markdown.js";
 import {createSseParser, extractChunk} from "./sse.js";
 import {conversationToMarkdown, createConversationExport, importConversationExport} from "./conversation.js";
+import {buildConversationMetadata, createConversationId, createConversationRepository} from "./storage.js";
 
-const CLIENT_VERSION = "1.8.0";
+const CLIENT_VERSION = "1.9.0";
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 
@@ -12,6 +13,7 @@ const STORAGE_KEYS = {
   models: "modelbridge.models.v1",
   settings: "modelbridge.settings.v1",
   conversation: "modelbridge.conversation.v1",
+  conversationMigrated: "modelbridge.conversation.idb-migrated.v1",
   usage: "modelbridge.usage.v1"
 };
 const LEGACY_BUDGET_STORAGE_KEY = "modelbridge.budget.v1";
@@ -148,6 +150,16 @@ const state = {
   selectedModel: "",
   selectedModels: storedModels && typeof storedModels === "object" && !Array.isArray(storedModels) ? storedModels : {},
   messages: normalizeStoredConversation(storedConversation),
+  conversationRepository: null,
+  conversationHistory: [],
+  currentConversationId: "",
+  currentConversationCreatedAt: "",
+  currentConversationPinned: false,
+  currentConversationTitle: "",
+  currentConversationProviderId: "",
+  currentConversationModel: "",
+  conversationSearch: "",
+  conversationListGeneration: 0,
   settings: normalizeSettings(storedSettings),
   busy: false,
   attachmentsProcessing: false,
@@ -156,7 +168,10 @@ const state = {
   modelsLoadGeneration: 0,
   versionMismatch: false,
   abortController: null,
+  diagnosticAbortController: null,
   editingProviderId: "",
+  providerWizardStep: 1,
+  lastDiagnostic: null,
   pendingAttachments: [],
   compatibilityNotices: new Set(),
   retryRequest: null,
@@ -454,6 +469,11 @@ function syncInteractionControls() {
   }
   const clearButton = $("#clearBtn");
   if (clearButton) clearButton.disabled = state.busy || dataOperationBusy;
+  const newConversationButton = $("#newConversationBtn");
+  if (newConversationButton) newConversationButton.disabled = state.busy || dataOperationBusy;
+  const conversationSearch = $("#conversationSearch");
+  if (conversationSearch) conversationSearch.disabled = dataOperationBusy;
+  $$("#conversationList button").forEach(button => { button.disabled = state.busy || dataOperationBusy; });
   const attachButton = $("#attachBtn");
   if (attachButton) attachButton.disabled = state.busy || dataOperationBusy;
   const fileInput = $("#fileInput");
@@ -726,22 +746,153 @@ function renderConversation() {
   state.messages.forEach(message => buildMessage(message));
 }
 
-function saveConversation() {
+function serializableConversationMessages(messages = state.messages) {
+  return messages.slice(-80).map(message => {
+    if (!message.attachments?.length) return message;
+    return {
+      ...message,
+      content: typeof message.content === "string"
+        ? message.content
+        : message.displayContent || "（本轮包含附件；刷新页面后附件内容不再参与上下文）",
+      attachments: message.attachments.map(attachment => ({...attachment, previewUrl: "", retained: false}))
+    };
+  });
+}
+
+function formatConversationTime(value) {
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return "";
+  if (localDay(timestamp) === localDay()) return timestamp.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  return timestamp.toLocaleDateString([], {month: "numeric", day: "numeric"});
+}
+
+function renderConversationHistory() {
+  const list = $("#conversationList");
+  if (!state.conversationRepository) {
+    list.innerHTML = '<div class="empty-state">当前浏览器仅支持单会话保存</div>';
+    return;
+  }
+  list.innerHTML = state.conversationHistory.length ? state.conversationHistory.map(conversation => `
+    <div class="conversation-item ${conversation.id === state.currentConversationId ? "active" : ""}" data-conversation-row="${escapeHtml(conversation.id)}">
+      <button class="conversation-main" type="button" data-conversation-open="${escapeHtml(conversation.id)}" title="${escapeHtml(conversation.title)}">
+        <b>${conversation.pinned ? '<span class="conversation-pin-mark" aria-label="已置顶">◆</span>' : ""}${escapeHtml(conversation.title)}</b>
+        <small>${escapeHtml(conversation.model || conversation.providerName || "本地对话")} · ${escapeHtml(formatConversationTime(conversation.updatedAt))}</small>
+      </button>
+      <span class="conversation-actions">
+        <button type="button" data-conversation-pin="${escapeHtml(conversation.id)}" aria-label="${conversation.pinned ? "取消置顶" : "置顶"}" title="${conversation.pinned ? "取消置顶" : "置顶"}">◆</button>
+        <button type="button" data-conversation-rename="${escapeHtml(conversation.id)}" aria-label="重命名" title="重命名">✎</button>
+        <button type="button" data-conversation-delete="${escapeHtml(conversation.id)}" aria-label="删除" title="删除">×</button>
+      </span>
+    </div>`).join("") : `<div class="empty-state">${state.conversationSearch ? "没有匹配的对话" : "发送第一条消息后会出现在这里"}</div>`;
+}
+
+async function refreshConversationHistory() {
+  if (!state.conversationRepository) {
+    renderConversationHistory();
+    return;
+  }
+  const generation = (state.conversationListGeneration || 0) + 1;
+  state.conversationListGeneration = generation;
   try {
-    const persisted = state.messages.slice(-80).map(message => {
-      if (!message.attachments?.length) return message;
-      return {
-        ...message,
-        content: typeof message.content === "string"
-          ? message.content
-          : message.displayContent || "（本轮包含附件；刷新页面后附件内容不再参与上下文）",
-        attachments: message.attachments.map(attachment => ({...attachment, previewUrl: "", retained: false}))
-      };
+    const records = await state.conversationRepository.list(state.conversationSearch);
+    if (generation !== state.conversationListGeneration) return;
+    state.conversationHistory = records;
+    renderConversationHistory();
+    syncInteractionControls();
+  } catch (error) {
+    if (generation !== state.conversationListGeneration) return;
+    $("#conversationList").innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function applyConversationRecord(record) {
+  state.currentConversationId = record.conversation.id;
+  state.currentConversationCreatedAt = record.conversation.createdAt;
+  state.currentConversationPinned = record.conversation.pinned === true;
+  state.currentConversationTitle = record.conversation.title || "";
+  state.currentConversationProviderId = record.conversation.providerId || "";
+  state.currentConversationModel = record.conversation.model || "";
+  state.messages = normalizeStoredConversation(record.messages);
+  state.retryRequest = null;
+  state.pendingAttachments = [];
+}
+
+function resetCurrentConversation() {
+  const timestamp = new Date().toISOString();
+  state.currentConversationId = createConversationId();
+  state.currentConversationCreatedAt = timestamp;
+  state.currentConversationPinned = false;
+  state.currentConversationTitle = "";
+  state.currentConversationProviderId = state.provider?.id || "";
+  state.currentConversationModel = state.selectedModel || "";
+  state.messages = [];
+  state.retryRequest = null;
+  state.pendingAttachments = [];
+}
+
+async function initializeConversationStorage() {
+  const legacyMessages = [...state.messages];
+  resetCurrentConversation();
+  state.messages = legacyMessages;
+  try {
+    state.conversationRepository = await createConversationRepository();
+    const records = await state.conversationRepository.list();
+    const migrationComplete = readStorage(STORAGE_KEYS.conversationMigrated, false) === true;
+    if (legacyMessages.length && (!migrationComplete || !records.length)) {
+      const saved = await saveConversation();
+      if (saved && state.conversationRepository) {
+        removeStorage(STORAGE_KEYS.conversation);
+        writeStorage(STORAGE_KEYS.conversationMigrated, true);
+      }
+    } else if (records.length) {
+      const record = await state.conversationRepository.load(records[0].id);
+      if (record) applyConversationRecord(record);
+      if (migrationComplete) removeStorage(STORAGE_KEYS.conversation);
+    }
+    await refreshConversationHistory();
+  } catch (error) {
+    state.conversationRepository = null;
+    state.messages = legacyMessages;
+    toast(`多会话历史不可用，已降级为单会话保存：${error.message}`, "error", 8000);
+    renderConversationHistory();
+  }
+}
+
+async function saveConversation() {
+  try {
+    const persisted = serializableConversationMessages();
+    if (!state.conversationRepository) {
+      removeStorage(STORAGE_KEYS.conversationMigrated);
+      return writeStorage(STORAGE_KEYS.conversation, persisted);
+    }
+    if (!persisted.length) return true;
+    const metadata = buildConversationMetadata({
+      id: state.currentConversationId || createConversationId(),
+      title: state.currentConversationTitle,
+      createdAt: state.currentConversationCreatedAt,
+      messages: persisted,
+      providerId: state.provider?.id || state.currentConversationProviderId || "",
+      providerName: state.provider?.name || persisted.at(-1)?.providerName || "",
+      model: state.selectedModel || state.currentConversationModel || persisted.at(-1)?.model || "",
+      pinned: state.currentConversationPinned
     });
-    return writeStorage(STORAGE_KEYS.conversation, persisted);
+    await state.conversationRepository.save(metadata, persisted);
+    state.currentConversationId = metadata.id;
+    state.currentConversationCreatedAt = metadata.createdAt;
+    state.currentConversationTitle = metadata.title;
+    state.currentConversationProviderId = metadata.providerId;
+    state.currentConversationModel = metadata.model;
+    removeStorage(STORAGE_KEYS.conversation);
+    writeStorage(STORAGE_KEYS.conversationMigrated, true);
+    await refreshConversationHistory();
+    return true;
   } catch {
     showStorageWarning();
-    return false;
+    state.conversationRepository?.close();
+    state.conversationRepository = null;
+    renderConversationHistory();
+    removeStorage(STORAGE_KEYS.conversationMigrated);
+    return writeStorage(STORAGE_KEYS.conversation, serializableConversationMessages());
   }
 }
 
@@ -919,13 +1070,13 @@ async function generateAssistant() {
       addMessageAction(view, "继续回答", "continue-answer");
       setRetryAction(view, "incomplete", assistantMessage);
     }
-    saveConversation();
+    await saveConversation();
   } catch (error) {
     if (error.name === "AbortError") {
       if (assistantMessage.content || assistantMessage.reasoning) {
         assistantMessage.content ||= "（已停止生成）";
         state.messages.push(assistantMessage);
-        saveConversation();
+        await saveConversation();
         renderAssistantMarkdown(view, assistantMessage.content, true);
         scheduleChatFollow(view, () => followStream);
       } else {
@@ -1027,7 +1178,7 @@ async function sendMessage(prefill = "") {
   state.retryRequest = null;
   state.messages.push(userMessage);
   buildMessage(userMessage);
-  saveConversation();
+  await saveConversation();
   await generateAssistant();
 }
 
@@ -1043,7 +1194,7 @@ async function retryLastRequest() {
     state.settings.maxTokens = Math.min(131_072, Math.max(8_192, Number(state.settings.maxTokens) * 2));
     writeStorage(STORAGE_KEYS.settings, state.settings);
     toast(`最大输出 Token 已调整为 ${state.settings.maxTokens}，正在重新生成`, "success", 5000);
-    saveConversation();
+    await saveConversation();
   }
   retry.article.remove();
   state.retryRequest = null;
@@ -1060,6 +1211,8 @@ function openModal(element) {
 }
 
 function closeModals() {
+  state.diagnosticAbortController?.abort();
+  state.diagnosticAbortController = null;
   $$(".modal").forEach(modal => { modal.hidden = true; });
   $("#backdrop").hidden = true;
   delete document.body.dataset.modalOpen;
@@ -1071,6 +1224,10 @@ function populatePresets() {
   const select = $("#presetId");
   select.innerHTML = "";
   state.server.presets.forEach(preset => select.add(new Option(preset.name, preset.id)));
+  $("#presetQuickGrid").innerHTML = state.server.presets.map(preset => `
+    <button class="preset-quick-card" type="button" data-preset-quick="${escapeHtml(preset.id)}">
+      <b>${escapeHtml(preset.name)}</b><small>${escapeHtml(preset.id === "custom" ? "其他兼容接口" : preset.baseUrl.replace(/^https?:\/\//, ""))}</small>
+    </button>`).join("");
 }
 
 function currentPreset() {
@@ -1085,7 +1242,90 @@ function applyPreset() {
   $("#modelsPath").value = preset.modelsPath;
   $("#chatPath").value = preset.chatPath;
   $("#presetHint").textContent = preset.hint;
+  $$("[data-preset-quick]").forEach(card => card.classList.toggle("selected", card.dataset.presetQuick === preset.id));
   syncProviderForm();
+}
+
+function clearProviderDiagnostic() {
+  state.lastDiagnostic = null;
+  const report = $("#diagnosticReport");
+  report.hidden = true;
+  report.innerHTML = "";
+}
+
+function renderProviderSummary() {
+  const report = state.lastDiagnostic;
+  if (!report) {
+    $("#providerSummary").innerHTML = '<div class="empty-state">请先完成连接诊断</div>';
+    return;
+  }
+  const observed = report.observed || {};
+  const payload = readProviderForm();
+  const overallText = report.overall === "pass" ? "全部检查通过" : "核心聊天可用，但有兼容性提示";
+  $("#providerSummary").innerHTML = `
+    <header><h3>${escapeHtml(payload.name)} 可以使用</h3><p>${escapeHtml(overallText)}。保存后会立即切换到这个平台，API Key 仍只保存在本机。</p></header>
+    <div class="summary-grid">
+      <div><small>API 地址</small><b title="${escapeHtml(payload.baseUrl)}">${escapeHtml(payload.baseUrl)}</b></div>
+      <div><small>测试模型</small><b>${escapeHtml(observed.testedModel || payload.defaultModel || "自动选择")}</b></div>
+      <div><small>模型来源</small><b>${observed.modelSource === "remote" ? `自动发现 ${observed.modelCount || 0} 个` : observed.modelSource === "fallback" ? "手动模型回退" : "手动配置"}</b></div>
+      <div><small>响应方式</small><b>${observed.streaming === false ? "非流式兼容" : "SSE 流式"}</b></div>
+      <div><small>输出上限参数</small><b>${escapeHtml(observed.outputTokenParameter || "平台默认")}</b></div>
+      <div><small>Token 用量</small><b>${observed.usageAvailable ? "可统计" : "本次未返回"}</b></div>
+    </div>`;
+}
+
+function setProviderWizardStep(step) {
+  const wizard = $("#providerForm").classList.contains("wizard-mode");
+  state.providerWizardStep = Math.max(1, Math.min(3, Number(step) || 1));
+  $$("[data-wizard-panel]").forEach(panel => {
+    panel.hidden = wizard ? Number(panel.dataset.wizardPanel) !== state.providerWizardStep : panel.dataset.wizardPanel === "3";
+  });
+  $$("[data-wizard-step-indicator]").forEach(indicator => {
+    const indicatorStep = Number(indicator.dataset.wizardStepIndicator);
+    indicator.classList.toggle("active", indicatorStep === state.providerWizardStep);
+    indicator.classList.toggle("complete", indicatorStep < state.providerWizardStep);
+  });
+  $("#wizardBackBtn").hidden = !wizard || state.providerWizardStep === 1;
+  $("#wizardNextBtn").hidden = !wizard || state.providerWizardStep !== 1;
+  $("#testProviderBtn").hidden = wizard && state.providerWizardStep !== 2;
+  $("#saveProviderBtn").hidden = wizard && state.providerWizardStep !== 3;
+  if (wizard && state.providerWizardStep === 3) renderProviderSummary();
+}
+
+function setProviderWizardMode(enabled) {
+  $("#providerForm").classList.toggle("wizard-mode", enabled);
+  setProviderWizardStep(enabled ? 1 : 1);
+}
+
+function renderDiagnosticReport(report) {
+  const container = $("#diagnosticReport");
+  const labels = {
+    pass: "通过",
+    partial: "部分兼容",
+    fail: "未通过",
+    needs_input: "需要补充",
+    warning: "提示",
+    skipped: "未检测",
+    unknown: "未知"
+  };
+  const icons = {pass: "✓", warning: "!", fail: "×", needs_input: "?", skipped: "–", unknown: "·"};
+  container.innerHTML = `
+    <div class="diagnostic-head ${escapeHtml(report.overall)}"><b>诊断结果：${labels[report.overall] || report.overall}</b><span>${Number(report.durationMs || 0).toLocaleString()} ms</span></div>
+    ${(report.checks || []).map(check => `<div class="diagnostic-check ${escapeHtml(check.status)}"><i>${icons[check.status] || "·"}</i><span><b>${escapeHtml(check.summary)}</b>${check.detail ? `<small>${escapeHtml(check.detail)}</small>` : ""}${check.suggestion ? `<small>建议：${escapeHtml(check.suggestion)}</small>` : ""}</span></div>`).join("")}`;
+  container.hidden = false;
+}
+
+function continueProviderWizard() {
+  const name = $("#providerName");
+  if (!name.reportValidity()) return;
+  setProviderWizardStep(2);
+  $("#baseUrl").focus();
+}
+
+function invalidateProviderDiagnostic() {
+  if (!state.lastDiagnostic) return;
+  clearProviderDiagnostic();
+  if ($("#providerForm").classList.contains("wizard-mode") && state.providerWizardStep === 3) setProviderWizardStep(2);
 }
 
 function renderProviderCards() {
@@ -1095,6 +1335,8 @@ function renderProviderCards() {
 }
 
 function resetProviderForm() {
+  state.diagnosticAbortController?.abort();
+  state.diagnosticAbortController = null;
   state.editingProviderId = "";
   $("#providerForm").reset();
   $("#providerId").value = "";
@@ -1105,11 +1347,16 @@ function resetProviderForm() {
   $("#deleteProviderBtn").hidden = true;
   $("#setupBanner").hidden = state.server.providers.length > 0;
   clearProviderFeedback();
+  clearProviderDiagnostic();
+  setProviderWizardMode(true);
   applyPreset();
+  setProviderWizardStep(1);
   renderProviderCards();
 }
 
 function fillProviderForm(provider) {
+  state.diagnosticAbortController?.abort();
+  state.diagnosticAbortController = null;
   state.editingProviderId = provider.id;
   $("#providerId").value = provider.id;
   $("#presetId").value = provider.presetId;
@@ -1131,7 +1378,10 @@ function fillProviderForm(provider) {
   $("#deleteProviderBtn").hidden = false;
   $("#setupBanner").hidden = true;
   clearProviderFeedback();
+  clearProviderDiagnostic();
+  setProviderWizardMode(false);
   syncProviderForm();
+  $$("[data-preset-quick]").forEach(card => card.classList.toggle("selected", card.dataset.presetQuick === provider.presetId));
   renderProviderCards();
 }
 
@@ -1203,16 +1453,43 @@ async function testProvider() {
   if (!backendIsCurrent()) return;
   const button = $("#testProviderBtn");
   clearProviderFeedback();
+  clearProviderDiagnostic();
   let payload;
   try { payload = readProviderForm(); }
   catch (error) { providerFeedback(error.message, true); return; }
-  setButtonBusy(button, true, "测试中…");
+  state.diagnosticAbortController?.abort();
+  const controller = new AbortController();
+  state.diagnosticAbortController = controller;
+  setButtonBusy(button, true, "诊断中…");
   try {
-    const result = await api("/api/providers/test", {method: "POST", body: JSON.stringify(payload)});
-    providerFeedback(result.message);
+    const result = await api("/api/providers/diagnose", {method: "POST", body: JSON.stringify(payload), signal: controller.signal});
+    if (state.diagnosticAbortController !== controller) return;
+    renderDiagnosticReport(result);
+    if (result.overall === "needs_input") {
+      const manualMode = document.querySelector('input[name="modelsMode"][value="manual"]');
+      if (manualMode) manualMode.checked = true;
+      syncProviderForm();
+      providerFeedback("这个平台没有标准模型列表。请填写平台文档中的模型 ID，然后重新诊断。", true);
+      $("#manualModels").focus();
+      return;
+    }
+    if (result.overall === "fail") {
+      providerFeedback("连接尚未通过，请按诊断建议修正配置后重试。", true);
+      return;
+    }
+    if (result.observed?.modelSource === "fallback") {
+      const manualMode = document.querySelector('input[name="modelsMode"][value="manual"]');
+      if (manualMode) manualMode.checked = true;
+      if (!$("#manualModels").value.trim() && result.observed.testedModel) $("#manualModels").value = result.observed.testedModel;
+      syncProviderForm();
+    }
+    state.lastDiagnostic = result;
+    if ($("#providerForm").classList.contains("wizard-mode")) setProviderWizardStep(3);
+    else providerFeedback(result.overall === "pass" ? "诊断通过，可以保存配置。" : "核心聊天可用；请查看兼容性提示后保存。" );
   } catch (error) {
-    providerFeedback(error.message, true);
+    if (error.name !== "AbortError") providerFeedback(error.message, true);
   } finally {
+    if (state.diagnosticAbortController === controller) state.diagnosticAbortController = null;
     setButtonBusy(button, false);
   }
 }
@@ -1220,6 +1497,11 @@ async function testProvider() {
 async function saveProvider(event) {
   event.preventDefault();
   if (!backendIsCurrent()) return;
+  if ($("#providerForm").classList.contains("wizard-mode") && (!state.lastDiagnostic || state.providerWizardStep !== 3)) {
+    if (state.providerWizardStep === 1) continueProviderWizard();
+    else providerFeedback("请先完成连接诊断，再保存平台。", true);
+    return;
+  }
   if (state.busy) {
     providerFeedback("请先停止当前回答，再保存并切换模型平台", true);
     return;
@@ -1343,11 +1625,13 @@ async function importConversationFile(event) {
   try {
     const parsed = JSON.parse(await file.text());
     const messages = importConversationExport(parsed);
-    if (state.messages.length && !confirm(`导入会替换当前 ${state.messages.length} 条消息，是否继续？`)) return;
+    if (!state.conversationRepository && state.messages.length && !confirm(`当前浏览器只支持单会话保存，导入会替换当前 ${state.messages.length} 条消息，是否继续？`)) return;
+    await saveConversation();
+    resetCurrentConversation();
     state.messages = messages;
     state.retryRequest = null;
     state.pendingAttachments = [];
-    const persisted = saveConversation();
+    const persisted = await saveConversation();
     renderAttachmentTray();
     renderConversation();
     syncInteractionControls();
@@ -1496,7 +1780,38 @@ async function switchProvider(id) {
   }
 }
 
-function clearConversation() {
+async function restoreConversationContext() {
+  if (!state.server) return;
+  const providerId = state.currentConversationProviderId;
+  if (providerId && state.server.providers.some(provider => provider.id === providerId) && providerId !== state.server.activeProviderId) {
+    await switchProvider(providerId);
+  }
+  if (state.currentConversationModel && state.models.some(model => model.id === state.currentConversationModel && model.capabilities?.chat !== false)) {
+    selectModel(state.currentConversationModel, false);
+  }
+}
+
+async function openConversation(id) {
+  if (!state.conversationRepository || !id || id === state.currentConversationId || state.busy || state.conversationImporting) return;
+  if (state.pendingAttachments.length && !confirm("切换对话会移除尚未发送的附件，是否继续？")) return;
+  await saveConversation();
+  try {
+    const record = await state.conversationRepository.load(id);
+    if (!record) throw new Error("对话不存在或已被删除");
+    applyConversationRecord(record);
+    renderAttachmentTray();
+    renderConversation();
+    await refreshConversationHistory();
+    await restoreConversationContext();
+    syncInteractionControls();
+    $("#sidebar").classList.remove("open");
+  } catch (error) {
+    toast(`无法打开对话：${error.message}`, "error", 7000);
+    await refreshConversationHistory();
+  }
+}
+
+async function newConversation() {
   if (state.conversationImporting) {
     toast("正在导入对话，请稍候再开始新对话", "error");
     return;
@@ -1509,17 +1824,77 @@ function clearConversation() {
     toast("正在读取附件，请稍候再开始新对话", "error");
     return;
   }
-  if (state.messages.length && !confirm("确定开始新对话吗？当前聊天记录会从此浏览器中清除。")) return;
-  state.messages = [];
-  state.retryRequest = null;
-  state.pendingAttachments = [];
-  removeStorage(STORAGE_KEYS.conversation);
+  if (!state.conversationRepository && state.messages.length && !confirm("当前浏览器不支持多会话历史。开始新对话会替换现有记录，是否继续？")) return;
+  await saveConversation();
+  resetCurrentConversation();
+  if (!state.conversationRepository) removeStorage(STORAGE_KEYS.conversation);
   renderAttachmentTray();
   renderConversation();
+  await refreshConversationHistory();
   syncInteractionControls();
+  input.focus();
+}
+
+async function toggleConversationPin(id) {
+  const conversation = state.conversationHistory.find(item => item.id === id);
+  if (!state.conversationRepository || !conversation) return;
+  try {
+    const updated = await state.conversationRepository.update(id, {pinned: !conversation.pinned});
+    if (id === state.currentConversationId) state.currentConversationPinned = updated.pinned;
+    await refreshConversationHistory();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function renameConversation(id) {
+  const conversation = state.conversationHistory.find(item => item.id === id);
+  if (!state.conversationRepository || !conversation) return;
+  const title = prompt("输入新的对话名称", conversation.title)?.trim();
+  if (!title || title === conversation.title) return;
+  try {
+    const updated = await state.conversationRepository.update(id, {title: title.slice(0, 120)});
+    if (id === state.currentConversationId) state.currentConversationTitle = updated.title;
+    await refreshConversationHistory();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function deleteConversation(id) {
+  const conversation = state.conversationHistory.find(item => item.id === id);
+  if (!state.conversationRepository || !conversation || !confirm(`确定删除“${conversation.title}”吗？此操作无法撤销。`)) return;
+  try {
+    await state.conversationRepository.delete(id);
+    if (id === state.currentConversationId) {
+      resetCurrentConversation();
+      renderAttachmentTray();
+      renderConversation();
+    }
+    await refreshConversationHistory();
+    syncInteractionControls();
+    toast("对话已删除");
+  } catch (error) {
+    toast(`删除失败：${error.message}`, "error");
+  }
 }
 
 function bindEvents() {
+  $("#newConversationBtn").addEventListener("click", newConversation);
+  $("#conversationSearch").addEventListener("input", event => {
+    state.conversationSearch = event.target.value;
+    void refreshConversationHistory();
+  });
+  $("#conversationList").addEventListener("click", async event => {
+    const open = event.target.closest("[data-conversation-open]");
+    const pin = event.target.closest("[data-conversation-pin]");
+    const rename = event.target.closest("[data-conversation-rename]");
+    const remove = event.target.closest("[data-conversation-delete]");
+    if (pin) await toggleConversationPin(pin.dataset.conversationPin);
+    else if (rename) await renameConversation(rename.dataset.conversationRename);
+    else if (remove) await deleteConversation(remove.dataset.conversationDelete);
+    else if (open) await openConversation(open.dataset.conversationOpen);
+  });
   $("#providerSelect").addEventListener("change", event => switchProvider(event.target.value));
   $("#usageBtn").addEventListener("click", openUsageDashboard);
   $("#capabilityBtn").addEventListener("click", openCapabilityCenter);
@@ -1527,6 +1902,13 @@ function bindEvents() {
   $("#topSettingsBtn").addEventListener("click", () => openProviderManager());
   $("#welcomeSetupBtn")?.addEventListener("click", () => openProviderManager("new"));
   $("#newProviderBtn").addEventListener("click", resetProviderForm);
+  $("#presetQuickGrid").addEventListener("click", event => {
+    const card = event.target.closest("[data-preset-quick]");
+    if (!card) return;
+    $("#presetId").value = card.dataset.presetQuick;
+    applyPreset();
+    invalidateProviderDiagnostic();
+  });
   $("#providerCards").addEventListener("click", event => {
     const card = event.target.closest("[data-provider-card]");
     if (!card) return;
@@ -1534,11 +1916,15 @@ function bindEvents() {
     if (provider) fillProviderForm(provider);
   });
   $("#providerForm").addEventListener("submit", saveProvider);
+  $("#providerForm").addEventListener("input", invalidateProviderDiagnostic);
   $("#testProviderBtn").addEventListener("click", testProvider);
+  $("#wizardNextBtn").addEventListener("click", continueProviderWizard);
+  $("#wizardBackBtn").addEventListener("click", () => setProviderWizardStep(state.providerWizardStep === 3 ? 2 : 1));
   $("#deleteProviderBtn").addEventListener("click", deleteProvider);
   $("#presetId").addEventListener("change", applyPreset);
   $("#authMode").addEventListener("change", syncProviderForm);
   $$('input[name="modelsMode"]').forEach(inputElement => inputElement.addEventListener("change", syncProviderForm));
+  $("#providerForm").addEventListener("change", invalidateProviderDiagnostic);
   $("#toggleKeyBtn").addEventListener("click", () => {
     const key = $("#apiKey");
     key.type = key.type === "password" ? "text" : "password";
@@ -1630,7 +2016,7 @@ function bindEvents() {
   $("#profileTopPMode").addEventListener("change", syncProfileForm);
   $("#temperature").addEventListener("input", event => $("#temperatureValue").textContent = Number(event.target.value).toFixed(1));
   $("#topP").addEventListener("input", event => $("#topPValue").textContent = Number(event.target.value).toFixed(2).replace(/0$/, ""));
-  $("#clearBtn").addEventListener("click", clearConversation);
+  $("#clearBtn").addEventListener("click", newConversation);
   $("#menuBtn").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
   $$('[data-close-modal]').forEach(button => button.addEventListener("click", closeModals));
   $("#backdrop").addEventListener("click", closeModals);
@@ -1661,6 +2047,7 @@ function bindEvents() {
 async function initialize() {
   bindEvents();
   syncInteractionControls();
+  await initializeConversationStorage();
   renderUsage();
   renderConversation();
   syncInteractionControls();
@@ -1680,7 +2067,14 @@ async function initialize() {
     }
     renderProviderSelect();
     if (!state.messages.length) renderConversation();
-    await loadModels();
+    const restoreDifferentProvider = state.currentConversationProviderId
+      && state.currentConversationProviderId !== state.server.activeProviderId
+      && state.server.providers.some(provider => provider.id === state.currentConversationProviderId);
+    if (restoreDifferentProvider) await restoreConversationContext();
+    else {
+      await loadModels();
+      await restoreConversationContext();
+    }
     if (!state.server.configured) openProviderManager("new");
   } catch (error) {
     syncInteractionControls();
