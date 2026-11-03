@@ -5,7 +5,7 @@ import {createSseParser, extractChunk} from "./sse.js";
 import {conversationToMarkdown, createConversationExport, importConversationExport} from "./conversation.js";
 import {buildConversationMetadata, createConversationId, createConversationRepository} from "./storage.js";
 
-const CLIENT_VERSION = "1.9.1";
+const CLIENT_VERSION = "1.10.0";
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 
@@ -467,8 +467,6 @@ function syncInteractionControls() {
   if (providerSelect) {
     providerSelect.disabled = !serverReady || !state.server?.providers.length || state.versionMismatch || state.busy || state.providerSwitching || state.conversationImporting;
   }
-  const clearButton = $("#clearBtn");
-  if (clearButton) clearButton.disabled = state.busy || dataOperationBusy;
   const newConversationButton = $("#newConversationBtn");
   if (newConversationButton) newConversationButton.disabled = state.busy || dataOperationBusy;
   const conversationSearch = $("#conversationSearch");
@@ -491,10 +489,14 @@ function syncInteractionControls() {
     if (button) button.disabled = !serverReady || state.versionMismatch || state.busy || state.conversationImporting;
   }
   input.disabled = state.conversationImporting;
-  sendBtn.disabled = state.conversationImporting;
+  sendBtn.disabled = state.conversationImporting || (!state.busy && (dataOperationBusy || state.providerSwitching || state.versionMismatch || !state.selectedModel || (!input.value.trim() && !state.pendingAttachments.length)));
+  $("#capabilityBtn").disabled = !state.selectedModel;
+  const composerHint = state.busy ? "正在回复… 点击停止按钮可中止" : state.attachmentsProcessing ? "正在读取附件…" : !serverReady ? "正在连接本地服务…" : !state.provider ? "先添加一个平台，就能开始聊天" : !state.selectedModel ? "请在「选择模型」中选择一个可用模型" : `发送至 ${state.provider.name} · ${state.selectedModel}`;
+  if ($("#composerHint").textContent !== composerHint) $("#composerHint").textContent = composerHint;
 }
 
 function renderProviderSelect() {
+  if (!state.messages.length) renderConversation();
   const select = $("#providerSelect");
   select.innerHTML = "";
   if (!state.server?.providers.length) {
@@ -524,6 +526,7 @@ async function loadModels() {
   const providerId = state.provider?.id || "";
   state.models = [];
   state.selectedModel = "";
+  syncInteractionControls();
   renderModels();
 
   if (!state.provider) {
@@ -553,6 +556,8 @@ async function loadModels() {
     $("#currentModel").textContent = "模型读取失败";
     setStatus("连接失败", "error");
     $("#modelList").innerHTML = `<div class="empty-state">${escapeHtml(error.message)}<button class="empty-action" data-action="manage">检查平台配置</button></div>`;
+  } finally {
+    syncInteractionControls();
   }
 }
 
@@ -579,7 +584,8 @@ function selectModel(modelId, focus = true) {
   writeStorage(STORAGE_KEYS.models, state.selectedModels);
   $("#currentModel").textContent = modelId;
   renderModels();
-  $("#sidebar").classList.remove("open");
+  setSidebarOpen(false);
+  syncInteractionControls();
   if (focus) input.focus();
 }
 
@@ -587,15 +593,14 @@ function welcomeMarkup() {
   const hasProvider = Boolean(state.server?.providers.length);
   return `<div id="welcome" class="welcome">
     <div class="hero-mark" aria-hidden="true"><span>M</span></div>
-    <p class="kicker">ONE CLIENT · MANY MODELS</p>
-    <h2>${hasProvider ? "准备好开始一段新对话" : "把你的 API，变成好用的聊天界面"}</h2>
-    <p class="welcome-copy">${hasProvider ? "选择左侧任意模型，然后直接提问。切换平台或模型不会清除当前上下文。" : "密钥只留在本机。接入任意 OpenAI 兼容平台，自由切换供应商与模型。"}</p>
-    <div class="suggestions">
-      <button type="button">解释一个我一直没弄懂的概念</button>
-      <button type="button">帮我把想法整理成执行计划</button>
-      <button type="button">写一段清晰、有注释的代码</button>
-    </div>
-    <button class="setup-link" type="button" data-action="manage">${hasProvider ? "管理模型平台" : "＋ 添加第一个模型平台"}</button>
+    <p class="kicker">MODELBRIDGE · 本地 AI 工作空间</p>
+    <h2>${hasProvider ? "今天，想一起完成什么？" : "从你的第一个 AI 平台开始"}</h2>
+    <p class="welcome-copy">${hasProvider ? "写作、学习、整理想法。从一个问题开始，<br>每段对话都会自动保存在这台浏览器中。" : "选一个平台，粘贴密钥，检测成功就能聊天。<br>常用平台的连接设置已经为你准备好了。"}</p>
+    ${hasProvider ? `<div class="suggestions">
+      <button type="button" data-prompt="请帮我润色下面这段文字，让表达更清楚自然：\n"><span aria-hidden="true">✎</span><b>写得更清楚</b><small>润色文字，整理表达</small></button>
+      <button type="button" data-prompt="请用通俗的语言和一个例子，解释这个概念："><span aria-hidden="true">◎</span><b>弄懂一个概念</b><small>用例子讲清楚复杂问题</small></button>
+      <button type="button" data-prompt="请把我的想法拆成具体的行动步骤：\n"><span aria-hidden="true">↗</span><b>把想法变成计划</b><small>拆解任务，找到下一步</small></button>
+    </div><p class="welcome-footnote">点击上方卡片填入问题，补充内容后再发送</p>` : '<button class="primary-btn" type="button" data-action="manage">＋ 连接我的第一个平台</button>'}
   </div>`;
 }
 
@@ -902,6 +907,7 @@ function resizeInput() {
   const height = Math.min(input.scrollHeight, heightLimit);
   input.style.height = `${height}px`;
   input.style.overflowY = input.scrollHeight > height ? "auto" : "hidden";
+  syncInteractionControls();
 }
 
 function setChatBusy(busy) {
@@ -1201,22 +1207,51 @@ async function retryLastRequest() {
   await generateAssistant();
 }
 
+function visibleFocusable(element) {
+  return [...element.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, a[href], [tabindex="0"]')]
+    .filter(item => item.tabIndex >= 0 && item.getClientRects().length && !item.closest("[inert]"));
+}
+
+function selectSidebarTab(name, focus = false) {
+  $$("[data-sidebar-tab]").forEach(button => {
+    const selected = button.dataset.sidebarTab === name;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    if (selected && focus) button.focus();
+  });
+  $("#historyPanel").hidden = name !== "history";
+  $("#modelsPanel").hidden = name !== "models";
+}
+
+function setSidebarOpen(open) {
+  const mobile = window.matchMedia("(max-width: 820px)").matches;
+  $("#sidebar").classList.toggle("open", open && mobile);
+  $("#sidebar").inert = mobile && !open;
+  $("#sidebarBackdrop").hidden = !open || !mobile;
+  $("#menuBtn").setAttribute("aria-expanded", String(open && mobile));
+  $(".main").inert = open && mobile;
+  if (open && mobile) $("#closeSidebarBtn").focus();
+}
+
 function openModal(element) {
   state.modalReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  setSidebarOpen(false);
+  $(".app-shell").inert = true;
   $$(".modal").forEach(modal => { modal.hidden = modal !== element; });
   $("#backdrop").hidden = false;
   element.hidden = false;
   document.body.dataset.modalOpen = "true";
-  queueMicrotask(() => element.querySelector("button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)")?.focus());
+  queueMicrotask(() => visibleFocusable(element)[0]?.focus());
 }
 
 function closeModals() {
-  state.diagnosticAbortController?.abort();
-  state.diagnosticAbortController = null;
+  cancelProviderDiagnostic(false);
   $$(".modal").forEach(modal => { modal.hidden = true; });
   $("#backdrop").hidden = true;
   delete document.body.dataset.modalOpen;
-  state.modalReturnFocus?.focus();
+  $(".app-shell").inert = false;
+  if (state.modalReturnFocus?.getClientRects().length && !state.modalReturnFocus.closest("[inert]")) state.modalReturnFocus.focus();
+  else $("#menuBtn").focus();
   state.modalReturnFocus = null;
 }
 
@@ -1252,7 +1287,7 @@ function renderProviderGuidance() {
   $("#providerRecipeUrl").textContent = preset.baseUrl || "需要填写";
   $("#providerRecipeUrl").title = preset.baseUrl || "";
   $("#providerRecipeAuth").textContent = authModeLabel(preset.authMode);
-  $("#providerRecipeModels").textContent = preset.recommendedModels?.length ? preset.recommendedModels.join(" / ") : "自动读取";
+  $("#providerRecipeModels").textContent = "自动读取可用模型";
   $("#toggleProviderAdvancedBtn").hidden = !guided;
   $("#restorePresetBtn").hidden = !guided;
   $("#toggleProviderAdvancedBtn").textContent = form.classList.contains("show-guided-advanced") ? "收起高级配置" : "修改高级配置";
@@ -1277,6 +1312,7 @@ function applyPreset() {
   $$("[data-preset-quick]").forEach(card => card.classList.toggle("selected", card.dataset.presetQuick === preset.id));
   syncProviderForm();
   renderProviderGuidance();
+  syncProviderForm();
 }
 
 function clearProviderDiagnostic() {
@@ -1317,11 +1353,22 @@ function setProviderWizardStep(step) {
     const indicatorStep = Number(indicator.dataset.wizardStepIndicator);
     indicator.classList.toggle("active", indicatorStep === state.providerWizardStep);
     indicator.classList.toggle("complete", indicatorStep < state.providerWizardStep);
+    if (indicatorStep === state.providerWizardStep) indicator.setAttribute("aria-current", "step");
+    else indicator.removeAttribute("aria-current");
   });
   $("#wizardBackBtn").hidden = !wizard || state.providerWizardStep === 1;
   $("#wizardNextBtn").hidden = !wizard || state.providerWizardStep !== 1;
   $("#testProviderBtn").hidden = wizard && state.providerWizardStep !== 2;
   $("#saveProviderBtn").hidden = wizard && state.providerWizardStep !== 3;
+  const titles = ["你想连接哪个平台？", "只差一把 API 密钥", "准备好了，开始聊天吧"];
+  const descriptions = ["选择密钥所属的平台，我们会填好连接设置。", "粘贴平台提供的 API Key，然后检测连接。", "连接已验证。保存后会自动为你选择一个可用模型。"];
+  if (currentPreset().authMode === "none") {
+    titles[1] = "连接本机模型服务";
+    descriptions[1] = "保持本机模型服务运行，点击检测连接即可，无需密钥。";
+  }
+  $("#wizardTitle").textContent = titles[state.providerWizardStep - 1];
+  $("#wizardDescription").textContent = descriptions[state.providerWizardStep - 1];
+  $("#providerForm").scrollTop = 0;
   if (wizard && state.providerWizardStep === 3) renderProviderSummary();
 }
 
@@ -1346,7 +1393,7 @@ function renderDiagnosticReport(report) {
   const icons = {pass: "✓", warning: "!", fail: "×", needs_input: "?", skipped: "–", unknown: "·"};
   container.innerHTML = `
     <div class="diagnostic-head ${escapeHtml(report.overall)}"><b>诊断结果：${labels[report.overall] || report.overall}</b><span>${Number(report.durationMs || 0).toLocaleString()} ms</span></div>
-    ${(report.checks || []).map(check => `<div class="diagnostic-check ${escapeHtml(check.status)}"><i>${icons[check.status] || "·"}</i><span><b>${escapeHtml(check.summary)}</b>${check.detail ? `<small>${escapeHtml(check.detail)}</small>` : ""}${check.suggestion ? `<small>建议：${escapeHtml(check.suggestion)}</small>` : ""}</span></div>`).join("")}`;
+    <details><summary>查看详细检测结果（${(report.checks || []).length} 项）</summary>${(report.checks || []).map(check => `<div class="diagnostic-check ${escapeHtml(check.status)}"><i>${icons[check.status] || "·"}</i><span><b>${escapeHtml(check.summary)}</b>${check.detail ? `<small>${escapeHtml(check.detail)}</small>` : ""}${check.suggestion ? `<small>建议：${escapeHtml(check.suggestion)}</small>` : ""}</span></div>`).join("")}</details>`;
   container.hidden = false;
 }
 
@@ -1354,10 +1401,12 @@ function continueProviderWizard() {
   const name = $("#providerName");
   if (!name.reportValidity()) return;
   setProviderWizardStep(2);
-  $("#baseUrl").focus();
+  const target = $("#providerForm").classList.contains("guided-preset") ? $("#apiKey").disabled ? $("#testProviderBtn") : $("#apiKey") : $("#baseUrl");
+  target.focus();
 }
 
 function invalidateProviderDiagnostic() {
+  cancelProviderDiagnostic(false);
   if (!state.lastDiagnostic) return;
   clearProviderDiagnostic();
   if ($("#providerForm").classList.contains("wizard-mode") && state.providerWizardStep === 3) setProviderWizardStep(2);
@@ -1370,10 +1419,11 @@ function renderProviderCards() {
 }
 
 function resetProviderForm() {
-  state.diagnosticAbortController?.abort();
-  state.diagnosticAbortController = null;
+  cancelProviderDiagnostic(false);
   state.editingProviderId = "";
   $("#providerForm").reset();
+  $("#apiKey").type = "password";
+  $("#toggleKeyBtn").textContent = "显示";
   $("#providerId").value = "";
   $("#presetId").value = "aliyun-bailian";
   $("#extraHeaders").value = "";
@@ -1390,8 +1440,9 @@ function resetProviderForm() {
 }
 
 function fillProviderForm(provider) {
-  state.diagnosticAbortController?.abort();
-  state.diagnosticAbortController = null;
+  cancelProviderDiagnostic(false);
+  $("#apiKey").type = "password";
+  $("#toggleKeyBtn").textContent = "显示";
   state.editingProviderId = provider.id;
   $("#providerId").value = provider.id;
   $("#presetId").value = provider.presetId;
@@ -1459,6 +1510,7 @@ function providerFeedback(message, error = false) {
   element.hidden = false;
   element.className = `feedback ${error ? "error" : ""}`;
   element.textContent = message;
+  element.scrollIntoView({block: "nearest"});
 }
 
 function clearProviderFeedback() {
@@ -1477,6 +1529,7 @@ function openProviderManager(providerId = "") {
     return;
   }
   populatePresets();
+  $(".provider-modal-card").classList.toggle("first-setup", !state.server.providers.length);
   renderProviderCards();
   const provider = state.server.providers.find(item => item.id === providerId);
   if (provider) fillProviderForm(provider);
@@ -1485,9 +1538,49 @@ function openProviderManager(providerId = "") {
   openModal($("#providerModal"));
 }
 
+function setDiagnosticBusy(busy) {
+  $("#diagnosticProgress").hidden = !busy;
+  $("#providerForm").setAttribute("aria-busy", String(busy));
+  if (busy) {
+    state.diagnosticControls = [...$("#providerForm").querySelectorAll("input, select, textarea, button"), $("#newProviderBtn"), ...$$("[data-provider-card]")]
+      .filter(element => element.id !== "cancelDiagnosticBtn" && !element.disabled);
+    state.diagnosticControls.forEach(element => { element.disabled = true; });
+  } else {
+    state.diagnosticControls?.forEach(element => { element.disabled = false; });
+    state.diagnosticControls = [];
+    syncProviderForm();
+  }
+  $("#testProviderBtn").textContent = busy ? "正在检测…" : "检测连接";
+}
+
+function cancelProviderDiagnostic(showMessage = true) {
+  if (!state.diagnosticAbortController) return;
+  state.diagnosticAbortController.abort();
+  state.diagnosticAbortController = null;
+  setDiagnosticBusy(false);
+  if (showMessage) providerFeedback("检测已取消。配置已保留，可以修改后重新检测。");
+}
+
+function validateProviderForm() {
+  const requiredKey = $("#authMode").value !== "none" && !state.server.providers.find(item => item.id === state.editingProviderId)?.hasApiKey;
+  const invalid = !$("#providerName").value.trim() ? ["providerName", "给这个平台起一个名称"]
+    : !$("#baseUrl").value.trim() || !$("#baseUrl").validity.valid ? ["baseUrl", "请填写有效的平台地址，例如 https://example.com/v1"]
+    : requiredKey && !$("#apiKey").value.trim() ? ["apiKey", "请先粘贴这个平台的 API Key，再检测连接"] : null;
+  if (!invalid) return true;
+  const [id, message] = invalid;
+  if ($("#providerForm").classList.contains("wizard-mode")) setProviderWizardStep(id === "providerName" ? 1 : 2);
+  if (id === "baseUrl") $("#providerForm").classList.add("show-guided-advanced");
+  const field = $(`#${id}`);
+  field.setAttribute("aria-invalid", "true");
+  field.addEventListener("input", () => field.removeAttribute("aria-invalid"), {once: true});
+  providerFeedback(message, true);
+  field.focus();
+  return false;
+}
+
 async function testProvider() {
   if (!backendIsCurrent()) return;
-  const button = $("#testProviderBtn");
+  if (state.diagnosticAbortController || !validateProviderForm()) return;
   clearProviderFeedback();
   clearProviderDiagnostic();
   let payload;
@@ -1496,7 +1589,8 @@ async function testProvider() {
   state.diagnosticAbortController?.abort();
   const controller = new AbortController();
   state.diagnosticAbortController = controller;
-  setButtonBusy(button, true, "诊断中…");
+  setDiagnosticBusy(true);
+  $("#cancelDiagnosticBtn").focus();
   try {
     const result = await api("/api/providers/diagnose", {method: "POST", body: JSON.stringify(payload), signal: controller.signal});
     if (state.diagnosticAbortController !== controller) return;
@@ -1526,10 +1620,14 @@ async function testProvider() {
     if ($("#providerForm").classList.contains("wizard-mode")) setProviderWizardStep(3);
     else providerFeedback(result.overall === "pass" ? "诊断通过，可以保存配置。" : "核心聊天可用；请查看兼容性提示后保存。" );
   } catch (error) {
-    if (error.name !== "AbortError") providerFeedback(error.message, true);
+    if (state.diagnosticAbortController === controller && error.name !== "AbortError") providerFeedback(error.message, true);
   } finally {
-    if (state.diagnosticAbortController === controller) state.diagnosticAbortController = null;
-    setButtonBusy(button, false);
+    if (state.diagnosticAbortController === controller) {
+      state.diagnosticAbortController = null;
+      setDiagnosticBusy(false);
+      if (state.providerWizardStep === 3) $("#saveProviderBtn").focus();
+      else if (document.querySelector('input[name="modelsMode"]:checked')?.value === "manual" && !$("#manualModels").value.trim()) $("#manualModels").focus();
+    }
   }
 }
 
@@ -1538,9 +1636,10 @@ async function saveProvider(event) {
   if (!backendIsCurrent()) return;
   if ($("#providerForm").classList.contains("wizard-mode") && (!state.lastDiagnostic || state.providerWizardStep !== 3)) {
     if (state.providerWizardStep === 1) continueProviderWizard();
-    else providerFeedback("请先完成连接诊断，再保存平台。", true);
+    else await testProvider();
     return;
   }
+  if (!validateProviderForm() || state.diagnosticAbortController) return;
   if (state.busy) {
     providerFeedback("请先停止当前回答，再保存并切换模型平台", true);
     return;
@@ -1843,7 +1942,7 @@ async function openConversation(id) {
     await refreshConversationHistory();
     await restoreConversationContext();
     syncInteractionControls();
-    $("#sidebar").classList.remove("open");
+    setSidebarOpen(false);
   } catch (error) {
     toast(`无法打开对话：${error.message}`, "error", 7000);
     await refreshConversationHistory();
@@ -1871,6 +1970,8 @@ async function newConversation() {
   renderConversation();
   await refreshConversationHistory();
   syncInteractionControls();
+  setSidebarOpen(false);
+  selectSidebarTab("history");
   input.focus();
 }
 
@@ -1919,6 +2020,26 @@ async function deleteConversation(id) {
 }
 
 function bindEvents() {
+  $("#appVersion").textContent = `ModelBridge v${CLIENT_VERSION} · 本地运行`;
+  $$("[data-sidebar-tab]").forEach(button => {
+    button.addEventListener("click", () => selectSidebarTab(button.dataset.sidebarTab));
+    button.addEventListener("keydown", event => {
+      if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+        event.preventDefault();
+        const name = event.key === "Home" ? "history" : event.key === "End" ? "models" : button.dataset.sidebarTab === "history" ? "models" : "history";
+        selectSidebarTab(name, true);
+      }
+    });
+  });
+  $("#chooseModelBtn").addEventListener("click", () => {
+    selectSidebarTab("models");
+    setSidebarOpen(true);
+    $("#modelSearch").focus();
+  });
+  $("#closeSidebarBtn").addEventListener("click", () => { setSidebarOpen(false); $("#menuBtn").focus(); });
+  $("#sidebarBackdrop").addEventListener("click", () => { setSidebarOpen(false); $("#menuBtn").focus(); });
+  window.matchMedia("(max-width: 820px)").addEventListener("change", () => setSidebarOpen(false));
+  setSidebarOpen(false);
   $("#newConversationBtn").addEventListener("click", newConversation);
   $("#conversationSearch").addEventListener("input", event => {
     state.conversationSearch = event.target.value;
@@ -1955,8 +2076,9 @@ function bindEvents() {
     if (provider) fillProviderForm(provider);
   });
   $("#providerForm").addEventListener("submit", saveProvider);
-  $("#providerForm").addEventListener("input", invalidateProviderDiagnostic);
+  $("#providerForm").addEventListener("input", () => { invalidateProviderDiagnostic(); clearProviderFeedback(); });
   $("#testProviderBtn").addEventListener("click", testProvider);
+  $("#cancelDiagnosticBtn").addEventListener("click", () => cancelProviderDiagnostic());
   $("#wizardNextBtn").addEventListener("click", continueProviderWizard);
   $("#wizardBackBtn").addEventListener("click", () => setProviderWizardStep(state.providerWizardStep === 3 ? 2 : 1));
   $("#toggleProviderAdvancedBtn").addEventListener("click", () => {
@@ -2027,7 +2149,11 @@ function bindEvents() {
   sendBtn.addEventListener("click", () => sendMessage());
   chat.addEventListener("click", async event => {
     const suggestion = event.target.closest(".suggestions button");
-    if (suggestion) sendMessage(suggestion.textContent);
+    if (suggestion) {
+      input.value = suggestion.dataset.prompt || suggestion.textContent;
+      resizeInput();
+      input.focus();
+    }
     if (event.target.closest('[data-action="manage"]')) openProviderManager(state.server.providers.length ? "" : "new");
     const copyButton = event.target.closest('[data-action="copy-message"]');
     if (copyButton) {
@@ -2067,25 +2193,28 @@ function bindEvents() {
   $("#profileTopPMode").addEventListener("change", syncProfileForm);
   $("#temperature").addEventListener("input", event => $("#temperatureValue").textContent = Number(event.target.value).toFixed(1));
   $("#topP").addEventListener("input", event => $("#topPValue").textContent = Number(event.target.value).toFixed(2).replace(/0$/, ""));
-  $("#clearBtn").addEventListener("click", newConversation);
-  $("#menuBtn").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
+  $("#menuBtn").addEventListener("click", () => setSidebarOpen(!$("#sidebar").classList.contains("open")));
   $$('[data-close-modal]').forEach(button => button.addEventListener("click", closeModals));
   $("#backdrop").addEventListener("click", closeModals);
   document.addEventListener("keydown", event => {
     if (event.key === "Escape") {
       const modal = $$(".modal").find(item => !item.hidden);
+      if ($("#sidebar").classList.contains("open") && !modal) {
+        setSidebarOpen(false);
+        $("#menuBtn").focus();
+        return;
+      }
       if (state.busy && !modal) {
         event.preventDefault();
         state.abortController?.abort();
         return;
       }
-      closeModals();
-      $("#sidebar").classList.remove("open");
+      if (modal) closeModals();
     }
     if (event.key === "Tab") {
-      const modal = $$(".modal").find(item => !item.hidden);
+      const modal = $$(".modal").find(item => !item.hidden) || ($("#sidebar").classList.contains("open") ? $("#sidebar") : null);
       if (!modal) return;
-      const focusable = [...modal.querySelectorAll("button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary")];
+      const focusable = visibleFocusable(modal);
       if (!focusable.length) return;
       const first = focusable[0];
       const last = focusable.at(-1);

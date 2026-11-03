@@ -11,6 +11,7 @@
 - 多平台管理：同时保存多个 API 平台并快速切换
 - 内置预设：阿里云百炼、OpenAI、DeepSeek、OpenRouter、硅基流动、Gemini/Claude 兼容层、Ollama
 - 三步接入向导：选择平台、执行真实最小调用诊断、确认后保存
+- 清晰的对话 / 模型侧栏、可编辑的问题模板、手机抽屉导航与键盘焦点管理
 - 结构化兼容性诊断：区分认证、额度、网络、接口路径、模型发现、流式响应、Token 参数与用量返回问题
 - 自定义 OpenAI-compatible Base URL
 - 支持 Bearer、`x-api-key`、`api-key`、自定义认证头和无认证模式
@@ -180,6 +181,8 @@ $env:AI_AUTH_MODE = "none"
 
 ## 开发
 
+界面使用绿色和暖白配色；左侧“对话记录 / 选择模型”切换内容，顶部模型名称也可打开模型选择。欢迎卡片只填入可编辑的问题，点击发送后才会调用模型。平台设置提供检测进度与取消按钮，详细检测结果和生成参数默认折叠。
+
 项目只使用 Node.js 标准库和原生 HTML/CSS/JavaScript：
 
 ```bash
@@ -187,6 +190,8 @@ npm run check
 npm test
 npm start
 ```
+
+可选浏览器验收：安装 Playwright 并准备浏览器后运行 `npm run test:ui`。也可以通过 `PLAYWRIGHT_MODULE` 指定已有 Playwright 的 `index.mjs` 绝对路径，通过 `BROWSER_EXECUTABLE` 指定浏览器。验收只使用模拟 API，覆盖接入、空密钥提示、取消重试、保存失败提示、聊天与历史恢复、手机侧栏和键盘焦点；截图写入被 Git 忽略的 `.ui-artifacts/`。
 
 目录结构：
 

@@ -12,23 +12,27 @@
     <aside id="sidebar" class="sidebar">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">M</span>
-        <div><strong>ModelBridge</strong><small>Local API Workspace</small></div>
+        <div><strong>ModelBridge</strong><small>你的 AI 对话空间</small></div>
+        <button id="closeSidebarBtn" class="icon-btn sidebar-close" type="button" aria-label="关闭侧栏">×</button>
       </div>
 
-      <section class="conversation-section" aria-label="对话历史">
-        <div class="section-label-row">
-          <label class="section-label" for="conversationSearch">对话</label>
-          <button id="newConversationBtn" class="text-btn" type="button">＋ 新建</button>
-        </div>
+      <button id="newConversationBtn" class="new-chat-btn" type="button"><span aria-hidden="true">＋</span> 开始新对话</button>
+      <div class="sidebar-tabs" role="tablist" aria-label="侧栏内容">
+        <button id="historyTab" type="button" role="tab" aria-selected="true" aria-controls="historyPanel" data-sidebar-tab="history">对话记录</button>
+        <button id="modelsTab" type="button" role="tab" aria-selected="false" aria-controls="modelsPanel" tabindex="-1" data-sidebar-tab="models">选择模型</button>
+      </div>
+
+      <section id="historyPanel" class="conversation-section" role="tabpanel" aria-labelledby="historyTab">
         <div class="conversation-search-wrap">
           <span aria-hidden="true">⌕</span>
-          <input id="conversationSearch" class="search conversation-search" type="search" autocomplete="off" placeholder="搜索历史">
+          <input id="conversationSearch" class="search conversation-search" type="search" autocomplete="off" placeholder="搜索对话内容…" aria-label="搜索对话内容">
         </div>
         <div id="conversationList" class="conversation-list" aria-live="polite">
           <div class="loading-line"><i></i>正在读取…</div>
         </div>
       </section>
 
+      <div id="modelsPanel" class="models-panel" role="tabpanel" aria-labelledby="modelsTab" hidden>
       <section class="provider-picker" aria-label="模型平台">
         <div class="section-label-row">
           <label class="section-label" for="providerSelect">模型平台</label>
@@ -43,7 +47,7 @@
         <label class="section-label" for="modelSearch">选择模型</label>
         <div class="search-wrap">
           <span aria-hidden="true">⌕</span>
-          <input id="modelSearch" class="search" type="search" autocomplete="off" placeholder="搜索模型 ID">
+          <input id="modelSearch" class="search" type="search" autocomplete="off" placeholder="搜索模型名称…">
         </div>
         <div class="filter-row" role="group" aria-label="模型分类">
           <button class="chip active" type="button" data-category="文本对话">文本</button>
@@ -54,24 +58,25 @@
           <div class="loading-line"><i></i>正在初始化…</div>
         </div>
       </section>
+      </div>
 
       <div class="sidebar-footer">
-        <button id="chatSettingsBtn" class="outline-btn" type="button">对话参数</button>
-        <button id="clearBtn" class="outline-btn danger" type="button">新对话</button>
+        <button id="chatSettingsBtn" class="outline-btn" type="button">对话设置与备份</button>
+        <small id="appVersion" class="app-version"></small>
       </div>
     </aside>
 
     <main class="main">
       <header class="topbar">
-        <button id="menuBtn" class="icon-btn menu-btn" type="button" aria-label="打开侧栏">☰</button>
-        <div class="current-context">
+        <button id="menuBtn" class="icon-btn menu-btn" type="button" aria-label="打开侧栏" aria-expanded="false" aria-controls="sidebar">☰</button>
+        <button id="chooseModelBtn" class="current-context" type="button" title="切换平台或模型" aria-label="切换平台或模型">
           <div id="currentProvider" class="eyebrow">等待配置</div>
-          <h1 id="currentModel">尚未选择模型</h1>
-        </div>
+          <span class="model-heading"><strong id="currentModel">尚未选择模型</strong><span aria-hidden="true">⌄</span></span>
+        </button>
         <div id="status" class="status"><span></span><b>初始化中</b></div>
-        <button id="usageBtn" class="usage-chip" type="button" aria-label="打开 Token 用量统计" title="Token 用量统计"><small>Token</small><b id="usageTopValue">0</b></button>
-        <button id="capabilityBtn" class="icon-btn" type="button" aria-label="模型能力中心" title="模型能力中心">◇</button>
-        <button id="topSettingsBtn" class="icon-btn" type="button" aria-label="管理模型平台" title="管理模型平台">⚙</button>
+        <button id="usageBtn" class="usage-chip" type="button" aria-label="打开 Token 用量统计" title="Token 用量统计"><small>用量</small><b id="usageTopValue">0</b></button>
+        <button id="capabilityBtn" class="toolbar-btn" type="button" title="查看当前模型支持哪些能力">模型能力</button>
+        <button id="topSettingsBtn" class="toolbar-btn" type="button">平台设置</button>
       </header>
 
       <section id="chat" class="chat" aria-live="polite">
@@ -90,12 +95,13 @@
       </section>
 
       <footer class="composer-wrap">
+        <div class="composer-context"><span id="composerHint" role="status">正在连接本地服务…</span><span class="keyboard-hint">Enter 发送 · Shift + Enter 换行</span></div>
         <div class="composer">
           <div id="attachmentTray" class="attachment-tray" hidden aria-live="polite"></div>
           <div class="composer-row">
             <input id="fileInput" type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/*,.docx,.md,.json,.csv,.tsv,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.java,.c,.cpp,.h,.hpp,.cs,.go,.rs,.php,.rb,.swift,.kt,.kts,.vue,.svelte,.html,.css,.scss,.less,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.log,.sql,.sh,.bash,.zsh,.ps1,.bat,.cmd">
             <button id="attachBtn" class="attach-btn" type="button" aria-label="添加附件" title="添加图片、PDF、DOCX、文本或代码文件">＋</button>
-            <textarea id="input" rows="1" placeholder="发消息…  Enter 发送，Shift + Enter 换行" aria-label="消息输入框"></textarea>
+            <textarea id="input" rows="1" placeholder="写下你的问题，或添加文件一起聊…" aria-label="消息输入框" aria-describedby="composerHint"></textarea>
             <button id="sendBtn" class="send-btn" type="button" aria-label="发送消息"><span>↑</span></button>
           </div>
         </div>
@@ -106,11 +112,12 @@
       </footer>
     </main>
   </div>
+  <button id="sidebarBackdrop" class="sidebar-backdrop" type="button" hidden aria-label="关闭侧栏" tabindex="-1"></button>
 
   <div id="providerModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="providerModalTitle">
     <div class="modal-card provider-modal-card">
       <header class="modal-header">
-        <div><p class="modal-kicker">LOCAL CONFIGURATION</p><h2 id="providerModalTitle">模型平台管理</h2></div>
+        <div><p class="modal-kicker">连接你的 AI</p><h2 id="providerModalTitle">模型平台管理</h2></div>
         <button class="icon-btn modal-close" type="button" data-close-modal aria-label="关闭">×</button>
       </header>
       <div class="provider-workspace">
@@ -120,13 +127,14 @@
           <p class="local-note"><span>●</span> 配置与密钥仅保存在本机<br><code>config.local.json</code></p>
         </aside>
 
-        <form id="providerForm" class="provider-form">
+        <form id="providerForm" class="provider-form" novalidate>
           <input id="providerId" type="hidden">
           <ol id="providerWizardSteps" class="wizard-steps" aria-label="添加平台步骤">
             <li data-wizard-step-indicator="1"><span>1</span>选择平台</li>
-            <li data-wizard-step-indicator="2"><span>2</span>连接诊断</li>
-            <li data-wizard-step-indicator="3"><span>3</span>确认保存</li>
+            <li data-wizard-step-indicator="2"><span>2</span>粘贴密钥</li>
+            <li data-wizard-step-indicator="3"><span>3</span>开始使用</li>
           </ol>
+          <div id="wizardIntro" class="wizard-intro"><h3 id="wizardTitle"></h3><p id="wizardDescription"></p></div>
 
           <section class="wizard-panel" data-wizard-panel="1">
             <div id="setupBanner" class="setup-banner" hidden>
@@ -144,11 +152,11 @@
             <div id="providerRecipe" class="provider-recipe" hidden>
               <header><span>推荐配置</span><strong id="providerRecipeTitle"></strong></header>
               <p id="providerRecipeNote"></p>
-              <dl>
+              <details class="recipe-details"><summary>查看连接信息</summary><dl>
                 <div><dt>接口地址</dt><dd id="providerRecipeUrl"></dd></div>
                 <div><dt>认证</dt><dd id="providerRecipeAuth"></dd></div>
                 <div><dt>模型</dt><dd id="providerRecipeModels"></dd></div>
-              </dl>
+              </dl></details>
               <footer>
                 <button id="toggleProviderAdvancedBtn" class="text-btn" type="button">修改高级配置</button>
                 <button id="restorePresetBtn" class="text-btn" type="button">恢复推荐配置</button>
@@ -182,7 +190,6 @@
               <label class="field"><span>附加请求头（JSON，可选）</span><textarea id="extraHeaders" rows="3" spellcheck="false" placeholder='{"HTTP-Referer":"https://example.com","X-Title":"My App"}'></textarea></label>
             </details>
 
-            <div id="providerFeedback" class="feedback" hidden></div>
             <div id="diagnosticReport" class="diagnostic-report" hidden aria-live="polite"></div>
             <p id="testCostNote" class="test-note">诊断会读取模型列表并要求模型只回复“OK”，通常只生成几个 Token；报告不会包含 API Key。</p>
           </section>
@@ -191,13 +198,15 @@
             <div id="providerSummary" class="provider-summary"></div>
           </section>
 
+          <div id="providerFeedback" class="feedback" hidden role="status" aria-live="polite"></div>
+          <div id="diagnosticProgress" class="diagnostic-progress" hidden role="status"><i aria-hidden="true"></i><span>正在连接平台并验证一条简短回复…<small>这可能需要几十秒，你可以随时取消。</small></span><button id="cancelDiagnosticBtn" class="text-btn" type="button">取消检测</button></div>
           <footer class="form-actions">
             <button id="deleteProviderBtn" class="danger-btn" type="button" hidden>删除</button>
             <span></span>
             <button id="wizardBackBtn" class="secondary-btn" type="button" hidden>上一步</button>
             <button id="wizardNextBtn" class="primary-btn" type="button" hidden>下一步</button>
-            <button id="testProviderBtn" class="secondary-btn" type="button">开始诊断</button>
-            <button id="saveProviderBtn" class="primary-btn" type="submit">保存并使用</button>
+            <button id="testProviderBtn" class="primary-btn" type="button">检测连接</button>
+            <button id="saveProviderBtn" class="primary-btn" type="submit">保存并开始聊天</button>
           </footer>
         </form>
       </div>
@@ -208,6 +217,7 @@
     <div class="modal-card settings-card">
       <header class="modal-header"><div><p class="modal-kicker">GENERATION</p><h2 id="chatSettingsTitle">对话参数</h2></div><button class="icon-btn modal-close" type="button" data-close-modal aria-label="关闭">×</button></header>
       <label class="field"><span>系统提示词</span><textarea id="systemPrompt" rows="5"></textarea></label>
+      <details class="advanced generation-options"><summary>高级生成参数 <small>不确定时保持默认即可</small></summary>
       <label class="range-field"><span>温度 <output id="temperatureValue">0.7</output></span><input id="temperature" type="range" min="0" max="2" value="0.7" step="0.1"></label>
       <label class="range-field"><span>Top P <output id="topPValue">1.0</output></span><input id="topP" type="range" min="0" max="1" value="1" step="0.05"></label>
       <div class="form-grid two-columns">
@@ -215,6 +225,7 @@
         <label class="field"><span>推理强度</span><select id="reasoningEffort" class="select"><option value="">平台默认</option><option value="none">None</option><option value="minimal">Minimal</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">XHigh</option><option value="max">Max（Kimi K3）</option></select></label>
       </div>
       <p class="field-help">Kimi K3/K3.1 只接受 Max；程序会按模型要求调整不兼容参数。推理 Token 也计入最大输出 Token。</p>
+      </details>
       <section class="conversation-data-section" aria-labelledby="conversationDataTitle">
         <div><h3 id="conversationDataTitle">对话数据</h3><p>导出当前会话的文本与元数据，不包含 API Key、附加请求头或图片/PDF 原始数据。</p></div>
         <div class="conversation-data-actions">

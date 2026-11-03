@@ -15,7 +15,7 @@ import {createSseParser} from "./web/sse.js";
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(ROOT, "config.local.json");
 const LEGACY_CONFIG_PATH = path.join(ROOT, "api.txt");
-const APP_VERSION = "1.9.1";
+const APP_VERSION = "1.10.0";
 const CONFIG_VERSION = 1;
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_CONTEXT_TEXT_CHARS = 240_000;

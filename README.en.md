@@ -7,6 +7,7 @@ ModelBridge is a local-first, dependency-free chat client for OpenAI-compatible 
 - Multiple local provider profiles
 - Presets for Alibaba Cloud Model Studio, OpenAI, DeepSeek, OpenRouter, SiliconFlow, the Gemini/Claude compatibility layers, and Ollama
 - A three-step onboarding flow with a real minimal chat probe before saving
+- Separate conversation/model sidebar views, editable prompt starters, mobile drawer navigation, and keyboard focus management
 - Structured diagnostics for authentication, quota, networking, model discovery, streaming, token-limit parameters, and usage reporting
 - Automatic `/models` discovery with a manual model-list fallback
 - Standards-compliant SSE streaming, stop-button or `Esc` cancellation, reasoning display, and safe Markdown rendering
@@ -65,11 +66,15 @@ The “Conversation data” controls export a restorable JSON backup or a readab
 
 ## Development
 
+Click the model name in the header to switch models. Starter cards fill an editable prompt before sending. Provider setup includes progress and cancellation, while technical diagnostic details and generation settings are collapsed by default.
+
 ```bash
 npm run check
 npm test
 npm start
 ```
+
+Optional browser acceptance: with Playwright and a browser installed, run `npm run test:ui`. `PLAYWRIGHT_MODULE` can point to an existing Playwright `index.mjs`, and `BROWSER_EXECUTABLE` can specify a browser executable. It uses mocked APIs only and writes screenshots to the ignored `.ui-artifacts/` directory.
 
 ## Security
 
