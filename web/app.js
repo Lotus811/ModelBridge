@@ -5,7 +5,7 @@ import {createSseParser, extractChunk} from "./sse.js";
 import {conversationToMarkdown, createConversationExport, importConversationExport} from "./conversation.js";
 import {buildConversationMetadata, createConversationId, createConversationRepository} from "./storage.js";
 
-const CLIENT_VERSION = "1.10.0";
+const CLIENT_VERSION = "1.11.0";
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 
@@ -164,6 +164,7 @@ const state = {
   busy: false,
   attachmentsProcessing: false,
   conversationImporting: false,
+  conversationSwitching: false,
   providerSwitching: false,
   modelsLoadGeneration: 0,
   versionMismatch: false,
@@ -238,6 +239,7 @@ async function api(url, options = {}) {
 function toast(message, kind = "success", duration = 3600) {
   const element = document.createElement("div");
   element.className = `toast ${kind === "error" ? "error" : ""}`;
+  element.setAttribute("role", kind === "error" ? "alert" : "status");
   element.textContent = message;
   $("#toastRegion").appendChild(element);
   window.setTimeout(() => element.remove(), duration);
@@ -264,6 +266,7 @@ function renderAttachmentTray() {
 }
 
 async function addFiles(fileList) {
+  if (state.conversationSwitching) return;
   if (state.conversationImporting) {
     toast("正在导入对话，请稍候再添加附件", "error");
     return;
@@ -462,10 +465,10 @@ function activeProvider() {
 
 function syncInteractionControls() {
   const serverReady = Boolean(state.server);
-  const dataOperationBusy = state.attachmentsProcessing || state.conversationImporting;
+  const dataOperationBusy = state.attachmentsProcessing || state.conversationImporting || state.conversationSwitching;
   const providerSelect = $("#providerSelect");
   if (providerSelect) {
-    providerSelect.disabled = !serverReady || !state.server?.providers.length || state.versionMismatch || state.busy || state.providerSwitching || state.conversationImporting;
+    providerSelect.disabled = !serverReady || !state.server?.providers.length || state.versionMismatch || state.busy || state.providerSwitching || dataOperationBusy;
   }
   const newConversationButton = $("#newConversationBtn");
   if (newConversationButton) newConversationButton.disabled = state.busy || dataOperationBusy;
@@ -486,9 +489,9 @@ function syncInteractionControls() {
   if (importConversationButton) importConversationButton.disabled = state.busy || dataOperationBusy;
   for (const id of ["manageProvidersBtn", "topSettingsBtn"]) {
     const button = $(`#${id}`);
-    if (button) button.disabled = !serverReady || state.versionMismatch || state.busy || state.conversationImporting;
+    if (button) button.disabled = !serverReady || state.versionMismatch || state.busy || dataOperationBusy;
   }
-  input.disabled = state.conversationImporting;
+  input.disabled = state.conversationImporting || state.conversationSwitching;
   sendBtn.disabled = state.conversationImporting || (!state.busy && (dataOperationBusy || state.providerSwitching || state.versionMismatch || !state.selectedModel || (!input.value.trim() && !state.pendingAttachments.length)));
   $("#capabilityBtn").disabled = !state.selectedModel;
   const composerHint = state.busy ? "正在回复… 点击停止按钮可中止" : state.attachmentsProcessing ? "正在读取附件…" : !serverReady ? "正在连接本地服务…" : !state.provider ? "先添加一个平台，就能开始聊天" : !state.selectedModel ? "请在「选择模型」中选择一个可用模型" : `发送至 ${state.provider.name} · ${state.selectedModel}`;
@@ -568,12 +571,26 @@ function renderModels() {
     (state.category === "全部" || model.category === state.category) && model.id.toLowerCase().includes(query)
   );
   $("#modelList").innerHTML = filtered.length
-    ? filtered.map(model => `<button class="model-btn ${model.id === state.selectedModel ? "active" : ""}" type="button" data-model="${escapeHtml(model.id)}" title="${escapeHtml(model.id)}${model.capabilities?.chat === false ? " · 不是聊天模型" : ""}" ${model.capabilities?.chat === false ? "aria-disabled=\"true\"" : ""}><span class="model-name">${escapeHtml(model.id)}</span>${model.capabilities?.chat === false ? '<small class="model-kind">非聊天</small>' : ""}</button>`).join("")
-    : `<div class="empty-state">没有匹配的模型</div>`;
+    ? filtered.map(model => `<button class="model-btn ${model.id === state.selectedModel ? "active" : ""}" type="button" data-model="${escapeHtml(model.id)}" title="${escapeHtml(model.id)}${model.capabilities?.chat === false ? " · 不是聊天模型" : ""}" aria-current="${model.id === state.selectedModel ? "true" : "false"}" ${model.capabilities?.chat === false ? "aria-disabled=\"true\"" : ""}><span class="model-name">${escapeHtml(model.id)}</span>${model.capabilities?.chat === false ? '<small class="model-kind">非聊天</small>' : ""}</button>`).join("")
+    : `<div class="empty-state rich-empty"><span class="empty-state-mark" aria-hidden="true">⌕</span><b>没有匹配的模型</b><small>换一个关键词，或恢复查看全部模型。</small><button class="empty-action" type="button" data-action="reset-model-filter">查看全部模型</button></div>`;
+}
+
+function selectModelCategory(category) {
+  state.category = category;
+  $$(".chip").forEach(item => {
+    const selected = item.dataset.category === category;
+    item.classList.toggle("active", selected);
+    item.setAttribute("aria-pressed", String(selected));
+  });
+  renderModels();
 }
 
 function selectModel(modelId, focus = true) {
   if (!modelId) return;
+  if (focus && (state.busy || state.conversationSwitching || state.conversationImporting || state.providerSwitching)) {
+    toast("请等待当前操作结束后再切换模型", "error");
+    return;
+  }
   const model = state.models.find(item => item.id === modelId);
   if (model?.capabilities?.chat === false) {
     toast("该项目不是聊天模型，不能通过 Chat Completions 发送消息", "error", 6000);
@@ -592,15 +609,17 @@ function selectModel(modelId, focus = true) {
 function welcomeMarkup() {
   const hasProvider = Boolean(state.server?.providers.length);
   return `<div id="welcome" class="welcome">
+    <div class="welcome-aura" aria-hidden="true"><i></i><i></i></div>
     <div class="hero-mark" aria-hidden="true"><span>M</span></div>
-    <p class="kicker">MODELBRIDGE · 本地 AI 工作空间</p>
+    <p class="kicker">MODELBRIDGE · 本地 AI 工作台</p>
     <h2>${hasProvider ? "今天，想一起完成什么？" : "从你的第一个 AI 平台开始"}</h2>
-    <p class="welcome-copy">${hasProvider ? "写作、学习、整理想法。从一个问题开始，<br>每段对话都会自动保存在这台浏览器中。" : "选一个平台，粘贴密钥，检测成功就能聊天。<br>常用平台的连接设置已经为你准备好了。"}</p>
+    <p class="welcome-copy">${hasProvider ? "写作、学习、整理想法。从一个问题开始，<br>ModelBridge 会把每段对话留在这台浏览器里。" : "选一个平台，粘贴密钥，检测成功就能聊天。<br>常用平台的连接方式已经为你准备好了。"}</p>
+    <div class="welcome-trust" aria-label="本地工作空间特性"><span><i aria-hidden="true"></i>密钥仅存本机</span><span><i aria-hidden="true"></i>${hasProvider ? "对话自动保存" : "三步完成连接"}</span><span><i aria-hidden="true"></i>自由切换模型</span></div>
     ${hasProvider ? `<div class="suggestions">
-      <button type="button" data-prompt="请帮我润色下面这段文字，让表达更清楚自然：\n"><span aria-hidden="true">✎</span><b>写得更清楚</b><small>润色文字，整理表达</small></button>
-      <button type="button" data-prompt="请用通俗的语言和一个例子，解释这个概念："><span aria-hidden="true">◎</span><b>弄懂一个概念</b><small>用例子讲清楚复杂问题</small></button>
-      <button type="button" data-prompt="请把我的想法拆成具体的行动步骤：\n"><span aria-hidden="true">↗</span><b>把想法变成计划</b><small>拆解任务，找到下一步</small></button>
-    </div><p class="welcome-footnote">点击上方卡片填入问题，补充内容后再发送</p>` : '<button class="primary-btn" type="button" data-action="manage">＋ 连接我的第一个平台</button>'}
+      <button type="button" data-prompt="请帮我润色下面这段文字，让表达更清楚自然：\n"><span class="suggestion-icon" aria-hidden="true">✎</span><span class="suggestion-copy"><b>写得更清楚</b><small>润色文字，整理表达</small></span><span class="suggestion-arrow" aria-hidden="true">↗</span></button>
+      <button type="button" data-prompt="请用通俗的语言和一个例子，解释这个概念："><span class="suggestion-icon" aria-hidden="true">◎</span><span class="suggestion-copy"><b>弄懂一个概念</b><small>用例子讲清楚复杂问题</small></span><span class="suggestion-arrow" aria-hidden="true">↗</span></button>
+      <button type="button" data-prompt="请把我的想法拆成具体的行动步骤：\n"><span class="suggestion-icon" aria-hidden="true">✓</span><span class="suggestion-copy"><b>把想法变成计划</b><small>拆解任务，找到下一步</small></span><span class="suggestion-arrow" aria-hidden="true">↗</span></button>
+    </div><p class="welcome-footnote">点击卡片填入问题，补充内容后再发送</p>` : '<button class="primary-btn" type="button" data-action="manage">＋ 连接我的第一个平台</button>'}
   </div>`;
 }
 
@@ -610,7 +629,7 @@ function buildMessage(message, transient = false) {
   article._modelbridgeMessage = message;
   const avatar = document.createElement("div");
   avatar.className = "avatar";
-  avatar.textContent = message.role === "user" ? "你" : "AI";
+  avatar.textContent = message.role === "user" ? "你" : "M";
 
   const main = document.createElement("div");
   main.className = "message-main";
@@ -788,7 +807,7 @@ function renderConversationHistory() {
         <button type="button" data-conversation-rename="${escapeHtml(conversation.id)}" aria-label="重命名" title="重命名">✎</button>
         <button type="button" data-conversation-delete="${escapeHtml(conversation.id)}" aria-label="删除" title="删除">×</button>
       </span>
-    </div>`).join("") : `<div class="empty-state">${state.conversationSearch ? "没有匹配的对话" : "发送第一条消息后会出现在这里"}</div>`;
+    </div>`).join("") : `<div class="empty-state rich-empty conversation-empty"><span class="empty-state-mark" aria-hidden="true">${state.conversationSearch ? "⌕" : "✦"}</span><b>${state.conversationSearch ? "没有匹配的对话" : "这里还很安静"}</b><small>${state.conversationSearch ? "换一个关键词，或清除搜索条件。" : "发送第一条消息后，对话会自动保存在这里。"}</small>${state.conversationSearch ? '<button class="empty-action" type="button" data-action="clear-conversation-search">清除搜索</button>' : ""}</div>`;
 }
 
 async function refreshConversationHistory() {
@@ -912,6 +931,7 @@ function resizeInput() {
 
 function setChatBusy(busy) {
   state.busy = busy;
+  chat.setAttribute("aria-busy", String(busy));
   sendBtn.classList.toggle("stop", busy);
   sendBtn.querySelector("span").textContent = busy ? "" : "↑";
   sendBtn.setAttribute("aria-label", busy ? "停止生成" : "发送消息");
@@ -935,7 +955,7 @@ function chatRequestPayload(messages = state.messages) {
 
 function setRetryAction(view, kind, assistantMessage = null) {
   state.retryRequest = {kind, article: view.article, assistantMessage};
-  addMessageAction(view, kind === "incomplete" ? "提高上限并重试" : "重试", "retry-request");
+  addMessageAction(view, kind === "incomplete" ? "提高上限并重试" : kind === "partial" ? "重新生成" : "重试", "retry-request");
 }
 
 function isChatNearBottom(threshold = 96) {
@@ -972,8 +992,10 @@ async function generateAssistant() {
   chat.addEventListener("scroll", trackScrollPosition, {passive: true});
 
   try {
+    // Lock interaction before the asynchronous history write as well as the request.
     const body = JSON.stringify(chatRequestPayload());
     if (utf8Bytes(body) > MAX_REQUEST_BYTES) throw new Error(`当前对话和附件合计超过 ${formatBytes(MAX_REQUEST_BYTES)}，请减少附件或开始新对话`);
+    await saveConversation();
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
@@ -1081,10 +1103,14 @@ async function generateAssistant() {
     if (error.name === "AbortError") {
       if (assistantMessage.content || assistantMessage.reasoning) {
         assistantMessage.content ||= "（已停止生成）";
+        assistantMessage.incomplete = true;
         state.messages.push(assistantMessage);
         await saveConversation();
         renderAssistantMarkdown(view, assistantMessage.content, true);
         scheduleChatFollow(view, () => followStream);
+        view.article.classList.add("incomplete");
+        addMessageAction(view, "继续回答", "continue-answer");
+        setRetryAction(view, "partial", assistantMessage);
       } else {
         view.article.remove();
       }
@@ -1095,9 +1121,23 @@ async function generateAssistant() {
         view.markdownFrame = 0;
       }
       view.article.classList.add("error");
-      view.content.textContent = `出错了：${error.message}`;
+      if (assistantMessage.content || assistantMessage.reasoning) {
+        assistantMessage.content ||= "（回答中断，已保留推理过程）";
+        assistantMessage.incomplete = true;
+        state.messages.push(assistantMessage);
+        renderAssistantMarkdown(view, assistantMessage.content, true);
+        const notice = document.createElement("p");
+        notice.className = "stream-error-notice";
+        notice.textContent = `回答中断：${error.message}。已保留收到的内容。`;
+        view.content.after(notice);
+        addMessageAction(view, "继续回答", "continue-answer");
+        setRetryAction(view, "partial", assistantMessage);
+        await saveConversation();
+      } else {
+        view.content.textContent = `出错了：${error.message}`;
+        setRetryAction(view, "error");
+      }
       scheduleChatFollow(view, () => followStream);
-      setRetryAction(view, "error");
     }
   } finally {
     chat.removeEventListener("scroll", trackScrollPosition);
@@ -1111,6 +1151,7 @@ async function generateAssistant() {
 }
 
 async function sendMessage(prefill = "") {
+  if (state.conversationSwitching) return;
   if (state.versionMismatch) {
     toast("当前页面连接的是旧版后端，请关闭旧启动窗口后重新双击“启动聊天.bat”", "error", 8000);
     return;
@@ -1121,6 +1162,10 @@ async function sendMessage(prefill = "") {
   }
   if (state.conversationImporting) {
     toast("正在导入对话，请稍候再发送", "error");
+    return;
+  }
+  if (state.providerSwitching) {
+    toast("正在切换模型平台，请稍候再发送", "error");
     return;
   }
   if (state.attachmentsProcessing) {
@@ -1184,23 +1229,23 @@ async function sendMessage(prefill = "") {
   state.retryRequest = null;
   state.messages.push(userMessage);
   buildMessage(userMessage);
-  await saveConversation();
   await generateAssistant();
 }
 
 async function retryLastRequest() {
-  if (!state.retryRequest || state.busy) return;
+  if (!state.retryRequest || state.busy || state.conversationSwitching || state.providerSwitching) return;
   const retry = state.retryRequest;
-  if (retry.kind === "incomplete") {
+  if (["incomplete", "partial"].includes(retry.kind)) {
     if (state.messages.at(-1) !== retry.assistantMessage) {
       toast("该回答后已有新消息，无法原位重试；请使用“继续回答”", "error", 6000);
       return;
     }
     state.messages.pop();
-    state.settings.maxTokens = Math.min(131_072, Math.max(8_192, Number(state.settings.maxTokens) * 2));
-    writeStorage(STORAGE_KEYS.settings, state.settings);
-    toast(`最大输出 Token 已调整为 ${state.settings.maxTokens}，正在重新生成`, "success", 5000);
-    await saveConversation();
+    if (retry.kind === "incomplete") {
+      state.settings.maxTokens = Math.min(131_072, Math.max(8_192, Number(state.settings.maxTokens) * 2));
+      writeStorage(STORAGE_KEYS.settings, state.settings);
+      toast(`最大输出 Token 已调整为 ${state.settings.maxTokens}，正在重新生成`, "success", 5000);
+    }
   }
   retry.article.remove();
   state.retryRequest = null;
@@ -1270,7 +1315,7 @@ function currentPreset() {
 }
 
 function authModeLabel(mode) {
-  return ({bearer: "Bearer Token", "x-api-key": "x-api-key", "api-key": "api-key", custom: "自定义请求头", none: "无需 API Key"})[mode] || mode;
+  return ({bearer: "Bearer Token", "x-api-key": "x-api-key", "api-key": "api-key", custom: "自定义请求头", none: "无需 API 密钥"})[mode] || mode;
 }
 
 function renderProviderGuidance() {
@@ -1302,8 +1347,8 @@ function applyPreset() {
   $("#modelsPath").value = preset.modelsPath;
   $("#chatPath").value = preset.chatPath;
   $("#apiKeyHint").textContent = preset.authMode === "none"
-    ? "这个平台不需要 API Key"
-    : "只粘贴平台生成的 Key，不要带“API Key=”或其他说明文字";
+    ? "这个平台不需要 API 密钥"
+    : "仅保存在这台电脑上。只粘贴密钥本身，不要包含“API Key =”等说明文字。";
   const autoMode = document.querySelector('input[name="modelsMode"][value="auto"]');
   if (autoMode) autoMode.checked = true;
   $("#manualModels").value = "";
@@ -1332,7 +1377,7 @@ function renderProviderSummary() {
   const payload = readProviderForm();
   const overallText = report.overall === "pass" ? "全部检查通过" : "核心聊天可用，但有兼容性提示";
   $("#providerSummary").innerHTML = `
-    <header><h3>${escapeHtml(payload.name)} 可以使用</h3><p>${escapeHtml(overallText)}。保存后会立即切换到这个平台，API Key 仍只保存在本机。</p></header>
+    <header><h3>${escapeHtml(payload.name)} 可以使用</h3><p>${escapeHtml(overallText)}。保存后会立即切换到这个平台，API 密钥仍只保存在本机。</p></header>
     <div class="summary-grid">
       <div><small>API 地址</small><b title="${escapeHtml(payload.baseUrl)}">${escapeHtml(payload.baseUrl)}</b></div>
       <div><small>测试模型</small><b>${escapeHtml(observed.testedModel || payload.defaultModel || "自动选择")}</b></div>
@@ -1361,7 +1406,7 @@ function setProviderWizardStep(step) {
   $("#testProviderBtn").hidden = wizard && state.providerWizardStep !== 2;
   $("#saveProviderBtn").hidden = wizard && state.providerWizardStep !== 3;
   const titles = ["你想连接哪个平台？", "只差一把 API 密钥", "准备好了，开始聊天吧"];
-  const descriptions = ["选择密钥所属的平台，我们会填好连接设置。", "粘贴平台提供的 API Key，然后检测连接。", "连接已验证。保存后会自动为你选择一个可用模型。"];
+  const descriptions = ["选择密钥所属的平台，我们会填好连接设置。", "粘贴平台提供的 API 密钥，然后检测连接。", "连接已验证。保存后会自动为你选择一个可用模型。"];
   if (currentPreset().authMode === "none") {
     titles[1] = "连接本机模型服务";
     descriptions[1] = "保持本机模型服务运行，点击检测连接即可，无需密钥。";
@@ -1427,8 +1472,8 @@ function resetProviderForm() {
   $("#providerId").value = "";
   $("#presetId").value = "aliyun-bailian";
   $("#extraHeaders").value = "";
-  $("#apiKey").placeholder = "粘贴 API Key";
-  $("#apiKeyHint").textContent = "只粘贴平台生成的 Key，不要带说明文字";
+  $("#apiKey").placeholder = "粘贴 API 密钥";
+  $("#apiKeyHint").textContent = "密钥只保存在这台电脑上，请勿粘贴其他说明文字。";
   $("#deleteProviderBtn").hidden = true;
   $("#setupBanner").hidden = state.server.providers.length > 0;
   clearProviderFeedback();
@@ -1449,8 +1494,8 @@ function fillProviderForm(provider) {
   $("#providerName").value = provider.name;
   $("#baseUrl").value = provider.baseUrl;
   $("#apiKey").value = "";
-  $("#apiKey").placeholder = provider.hasApiKey ? `${provider.apiKeyHint} 已保存；留空则保持不变` : "粘贴 API Key";
-  $("#apiKeyHint").textContent = provider.hasApiKey ? `已保存密钥 ${provider.apiKeyHint}` : "当前没有保存密钥";
+  $("#apiKey").placeholder = provider.hasApiKey ? `${provider.apiKeyHint} 已保存；留空则保持不变` : "粘贴 API 密钥";
+  $("#apiKeyHint").textContent = provider.hasApiKey ? `密钥 ${provider.apiKeyHint} 已安全保存在本机` : "当前没有保存密钥";
   $("#authMode").value = provider.authMode;
   $("#apiKeyHeader").value = provider.apiKeyHeader || "";
   $("#modelsPath").value = provider.modelsPath;
@@ -1565,7 +1610,7 @@ function validateProviderForm() {
   const requiredKey = $("#authMode").value !== "none" && !state.server.providers.find(item => item.id === state.editingProviderId)?.hasApiKey;
   const invalid = !$("#providerName").value.trim() ? ["providerName", "给这个平台起一个名称"]
     : !$("#baseUrl").value.trim() || !$("#baseUrl").validity.valid ? ["baseUrl", "请填写有效的平台地址，例如 https://example.com/v1"]
-    : requiredKey && !$("#apiKey").value.trim() ? ["apiKey", "请先粘贴这个平台的 API Key，再检测连接"] : null;
+    : requiredKey && !$("#apiKey").value.trim() ? ["apiKey", "请先粘贴这个平台的 API 密钥，再检测连接"] : null;
   if (!invalid) return true;
   const [id, message] = invalid;
   if ($("#providerForm").classList.contains("wizard-mode")) setProviderWizardStep(id === "providerName" ? 1 : 2);
@@ -1750,7 +1795,7 @@ async function importConversationFile(event) {
   const file = inputElement.files?.[0];
   inputElement.value = "";
   if (!file) return;
-  if (state.busy || state.attachmentsProcessing) {
+  if (state.busy || state.attachmentsProcessing || state.conversationSwitching || state.providerSwitching) {
     toast("请等待当前操作结束后再导入对话", "error");
     return;
   }
@@ -1930,10 +1975,13 @@ async function restoreConversationContext() {
 }
 
 async function openConversation(id) {
-  if (!state.conversationRepository || !id || id === state.currentConversationId || state.busy || state.conversationImporting) return;
+  if (!state.conversationRepository || !id || id === state.currentConversationId || state.busy || state.conversationImporting || state.conversationSwitching || state.attachmentsProcessing || state.providerSwitching) return;
   if (state.pendingAttachments.length && !confirm("切换对话会移除尚未发送的附件，是否继续？")) return;
-  await saveConversation();
+  state.conversationSwitching = true;
+  syncInteractionControls();
   try {
+    await saveConversation();
+    if (!state.conversationRepository) throw new Error("对话数据库不可用，当前对话已保留");
     const record = await state.conversationRepository.load(id);
     if (!record) throw new Error("对话不存在或已被删除");
     applyConversationRecord(record);
@@ -1946,10 +1994,14 @@ async function openConversation(id) {
   } catch (error) {
     toast(`无法打开对话：${error.message}`, "error", 7000);
     await refreshConversationHistory();
+  } finally {
+    state.conversationSwitching = false;
+    syncInteractionControls();
   }
 }
 
 async function newConversation() {
+  if (state.conversationSwitching || state.providerSwitching) return;
   if (state.conversationImporting) {
     toast("正在导入对话，请稍候再开始新对话", "error");
     return;
@@ -1963,15 +2015,21 @@ async function newConversation() {
     return;
   }
   if (!state.conversationRepository && state.messages.length && !confirm("当前浏览器不支持多会话历史。开始新对话会替换现有记录，是否继续？")) return;
-  await saveConversation();
-  resetCurrentConversation();
-  if (!state.conversationRepository) removeStorage(STORAGE_KEYS.conversation);
-  renderAttachmentTray();
-  renderConversation();
-  await refreshConversationHistory();
+  state.conversationSwitching = true;
   syncInteractionControls();
-  setSidebarOpen(false);
-  selectSidebarTab("history");
+  try {
+    await saveConversation();
+    resetCurrentConversation();
+    if (!state.conversationRepository) removeStorage(STORAGE_KEYS.conversation);
+    renderAttachmentTray();
+    renderConversation();
+    await refreshConversationHistory();
+    setSidebarOpen(false);
+    selectSidebarTab("history");
+  } finally {
+    state.conversationSwitching = false;
+    syncInteractionControls();
+  }
   input.focus();
 }
 
@@ -2050,7 +2108,13 @@ function bindEvents() {
     const pin = event.target.closest("[data-conversation-pin]");
     const rename = event.target.closest("[data-conversation-rename]");
     const remove = event.target.closest("[data-conversation-delete]");
-    if (pin) await toggleConversationPin(pin.dataset.conversationPin);
+    const clearSearch = event.target.closest('[data-action="clear-conversation-search"]');
+    if (clearSearch) {
+      $("#conversationSearch").value = "";
+      state.conversationSearch = "";
+      await refreshConversationHistory();
+      $("#conversationSearch").focus();
+    } else if (pin) await toggleConversationPin(pin.dataset.conversationPin);
     else if (rename) await renameConversation(rename.dataset.conversationRename);
     else if (remove) await deleteConversation(remove.dataset.conversationDelete);
     else if (open) await openConversation(open.dataset.conversationOpen);
@@ -2090,7 +2154,7 @@ function bindEvents() {
     applyPreset();
     clearProviderDiagnostic();
     clearProviderFeedback();
-    toast("已恢复该平台的推荐配置；现在只需粘贴 API Key");
+    toast("已恢复该平台的推荐配置；现在只需粘贴 API 密钥");
     $("#apiKey").focus();
   });
   $("#deleteProviderBtn").addEventListener("click", deleteProvider);
@@ -2109,13 +2173,13 @@ function bindEvents() {
     const model = event.target.closest("[data-model]");
     if (model) selectModel(model.dataset.model);
     if (event.target.closest('[data-action="manage"]')) openProviderManager();
+    if (event.target.closest('[data-action="reset-model-filter"]')) {
+      $("#modelSearch").value = "";
+      selectModelCategory("全部");
+      $("#modelSearch").focus();
+    }
   });
-  $$(".chip").forEach(chip => chip.addEventListener("click", () => {
-    $$(".chip").forEach(item => item.classList.remove("active"));
-    chip.classList.add("active");
-    state.category = chip.dataset.category;
-    renderModels();
-  }));
+  $$(".chip").forEach(chip => chip.addEventListener("click", () => selectModelCategory(chip.dataset.category)));
 
   input.addEventListener("input", resizeInput);
   window.addEventListener("resize", resizeInput);

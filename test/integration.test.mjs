@@ -36,6 +36,30 @@ function request(port, {method = "GET", path = "/", body = "", host = `127.0.0.1
   });
 }
 
+test("rejects malformed request URLs and keeps serving subsequent requests", async t => {
+  const {server} = createAppServer({port: 0, config: {version: 1, providers: [], activeProviderId: ""}});
+  const port = await listen(server);
+  t.after(() => close(server));
+  const invalid = await request(port, {path: "http://["});
+  assert.equal(invalid.status, 400);
+  assert.match(JSON.parse(invalid.body).error.message, /请求地址/);
+  const health = await request(port, {path: "/api/health"});
+  assert.equal(health.status, 200);
+  assert.equal(JSON.parse(health.body).ok, true);
+});
+
+test("rejects non-object JSON chat requests without crashing the server", async t => {
+  const {server} = createAppServer({port: 0, config: {version: 1, providers: [], activeProviderId: ""}});
+  const port = await listen(server);
+  t.after(() => close(server));
+  for (const body of ["null", "[]", "42", '"hello"', "true"]) {
+    const response = await request(port, {method: "POST", path: "/api/chat", body});
+    assert.equal(response.status, 400);
+    assert.match(JSON.parse(response.body).error.message, /JSON 对象/);
+  }
+  assert.equal((await request(port, {path: "/api/health"})).status, 200);
+});
+
 test("proxies Kimi streams with adapted parameters and blocks untrusted Host headers", async t => {
   let receivedPayload;
   const upstream = http.createServer(async (req, res) => {

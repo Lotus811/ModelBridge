@@ -46,6 +46,10 @@ try {
       result = {state: state(), provider};
     } else if (pathname === "/api/chat") {
       chatCount++;
+      if (chatCount === 2) {
+        await route.fulfill({contentType: "text/event-stream", body: 'data: {"choices":[{"delta":{"content":"中断前已经生成的正文。"}}]}\n\nevent: error\ndata: {"error":{"message":"模拟网络中断"}}\n\n'});
+        return;
+      }
       await route.fulfill({contentType: "text/event-stream", body: 'data: {"choices":[{"delta":{"content":"这是本地界面验收回复。"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'});
       return;
     } else throw new Error(`Unexpected API request: ${pathname}`);
@@ -61,6 +65,7 @@ try {
   assert.equal(diagnosisCount, 0);
   await page.locator("#apiKey").fill("demo-key");
   await page.screenshot({path: path.join(output, "setup-desktop.png")});
+  assert.equal(await page.locator(".provider-workspace").evaluate(el => el.getBoundingClientRect().height < 650), true, "First-time setup should fit its content instead of leaving a tall blank panel");
   await page.locator("#testProviderBtn").click();
   await page.locator("#diagnosticProgress").waitFor({state: "visible"});
   assert.equal(await page.locator("#apiKey").isDisabled(), true);
@@ -77,19 +82,66 @@ try {
   assert.equal(await page.locator("#providerFeedback").isVisible(), true, "Save failures are visible on the confirmation step");
   await page.locator("#saveProviderBtn:enabled").click();
   await page.locator("#currentModel").filter({hasText: "demo-chat"}).waitFor();
+  assert.equal(await page.locator("[data-model=demo-chat]").getAttribute("aria-current"), "true");
   assert.equal(await page.locator("#sendBtn").isDisabled(), true);
+  await page.locator("#conversationSearch").fill("不存在的对话");
+  await page.locator('[data-action="clear-conversation-search"]').click();
+  assert.equal(await page.locator("#conversationSearch").inputValue(), "");
+  await page.locator("#chooseModelBtn").click();
+  await page.locator("#modelSearch").fill("missing-model");
+  await page.locator('[data-action="reset-model-filter"]').click();
+  assert.equal(await page.locator('[data-category="全部"]').getAttribute("aria-pressed"), "true");
+  await page.locator("#historyTab").click();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "No horizontal overflow on desktop");
   await page.screenshot({path: path.join(output, "chat-desktop.png")});
   await page.locator(".suggestions button").first().click();
   assert.equal(chatCount, 0, "Starter prompts must not send until the user confirms");
   assert.equal(await page.locator("#sendBtn").isEnabled(), true);
-  await page.locator("#sendBtn").click();
+  // Make the history write slow enough to expose interaction races before fetch.
+  await page.evaluate(async () => {
+    const {ConversationRepository} = await import("/web/storage.js");
+    const save = ConversationRepository.prototype.save;
+    ConversationRepository.prototype.save = async function (...args) {
+      await new Promise(resolve => setTimeout(resolve, 150));
+      return save.apply(this, args);
+    };
+  });
+  await page.evaluate(() => {
+    document.querySelector("#sendBtn").click();
+    if (!document.querySelector("#newConversationBtn").disabled) throw new Error("History writes must lock conversation changes immediately");
+  });
   await page.locator(".message.assistant .message-content").filter({hasText: "本地界面验收回复"}).waitFor();
   await page.locator("#newConversationBtn:enabled").waitFor();
+  await page.screenshot({path: path.join(output, "conversation-desktop.png")});
   await page.locator("#newConversationBtn").click();
+  await page.locator("#newConversationBtn:enabled").waitFor();
+  assert.equal(await page.locator(".message").count(), 0);
   await page.locator("#conversationList [data-conversation-open]").first().click();
   await page.locator(".message.assistant").waitFor();
   await page.reload();
   await page.locator(".message.assistant").waitFor();
+  await page.locator("#input").fill("测试流式中断");
+  await page.locator("#sendBtn").click();
+  await page.locator(".stream-error-notice").filter({hasText: "模拟网络中断"}).waitFor();
+  assert.match(await page.locator(".message.assistant").last().innerText(), /中断前已经生成的正文/);
+  await page.locator("#newConversationBtn:enabled").waitFor();
+  await page.locator('[data-action="retry-request"]').last().click();
+  await page.locator("#newConversationBtn:enabled").waitFor();
+  assert.equal(chatCount, 3, "Interrupted replies can be regenerated");
+  assert.equal(await page.locator(".message.user").count(), 2, "Regeneration reuses the original question");
+  // Restore an interrupted reply to verify persistence and small-screen actions.
+  await page.locator("#input").fill("再次测试中断");
+  chatCount = 1;
+  await page.locator("#sendBtn").click();
+  await page.locator(".stream-error-notice").waitFor();
+  await page.locator("#newConversationBtn:enabled").waitFor();
+  await page.reload();
+  await page.locator(".message.assistant.incomplete").waitFor();
+  assert.match(await page.locator(".message.assistant").last().innerText(), /中断前已经生成的正文/);
+  await page.screenshot({path: path.join(output, "interrupted-desktop.png")});
+  await page.setViewportSize({width: 768, height: 900});
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "No horizontal overflow on tablet");
+  await page.screenshot({path: path.join(output, "conversation-tablet.png")});
   await page.setViewportSize({width: 390, height: 844});
   await page.locator("#menuBtn").click();
   assert.equal(await page.locator("#sidebarBackdrop").isVisible(), true);
@@ -101,6 +153,10 @@ try {
   await page.keyboard.press("Escape");
   assert.equal(await page.locator("#input").evaluate(el => el === document.activeElement), true, "Escape keeps focus in the composer when no overlay is open");
   await page.screenshot({path: path.join(output, "chat-mobile.png")});
+  for (const width of [320, 360, 390]) {
+    await page.setViewportSize({width, height: 740});
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `No horizontal overflow at ${width}px`);
+  }
   await page.locator("#topSettingsBtn").click();
   await page.locator("#newProviderBtn").click();
   await page.locator("#presetQuickGrid button[data-preset-quick=deepseek]").click();
@@ -111,7 +167,7 @@ try {
   await page.keyboard.press("Escape");
   assert.equal(await page.locator("#providerModal").isVisible(), false);
   assert.deepEqual(errors, []);
-  console.log("UI acceptance passed: onboarding, validation, cancellation, chat, history restore, mobile drawer, no page errors.");
+  console.log("UI acceptance passed: onboarding, validation, cancellation, chat, history locking, interrupted reply recovery/regeneration, history restore, responsive layout, mobile drawer, no page errors.");
   console.log(`Screenshots: ${output}`);
 } finally {
   await browser?.close();

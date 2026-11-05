@@ -12,11 +12,11 @@
     <aside id="sidebar" class="sidebar">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">M</span>
-        <div><strong>ModelBridge</strong><small>你的 AI 对话空间</small></div>
+        <div><strong>ModelBridge</strong><small><i aria-hidden="true"></i> 本地运行 · 密钥自持</small></div>
         <button id="closeSidebarBtn" class="icon-btn sidebar-close" type="button" aria-label="关闭侧栏">×</button>
       </div>
 
-      <button id="newConversationBtn" class="new-chat-btn" type="button"><span aria-hidden="true">＋</span> 开始新对话</button>
+      <button id="newConversationBtn" class="new-chat-btn" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>开始新对话</span></button>
       <div class="sidebar-tabs" role="tablist" aria-label="侧栏内容">
         <button id="historyTab" type="button" role="tab" aria-selected="true" aria-controls="historyPanel" data-sidebar-tab="history">对话记录</button>
         <button id="modelsTab" type="button" role="tab" aria-selected="false" aria-controls="modelsPanel" tabindex="-1" data-sidebar-tab="models">选择模型</button>
@@ -50,9 +50,9 @@
           <input id="modelSearch" class="search" type="search" autocomplete="off" placeholder="搜索模型名称…">
         </div>
         <div class="filter-row" role="group" aria-label="模型分类">
-          <button class="chip active" type="button" data-category="文本对话">文本</button>
-          <button class="chip" type="button" data-category="多模态">多模态</button>
-          <button class="chip" type="button" data-category="全部">全部</button>
+          <button class="chip active" type="button" data-category="文本对话" aria-pressed="true">文本</button>
+          <button class="chip" type="button" data-category="多模态" aria-pressed="false">多模态</button>
+          <button class="chip" type="button" data-category="全部" aria-pressed="false">全部</button>
         </div>
         <div id="modelList" class="model-list" aria-live="polite">
           <div class="loading-line"><i></i>正在初始化…</div>
@@ -68,39 +68,38 @@
 
     <main class="main">
       <header class="topbar">
-        <button id="menuBtn" class="icon-btn menu-btn" type="button" aria-label="打开侧栏" aria-expanded="false" aria-controls="sidebar">☰</button>
+        <button id="menuBtn" class="icon-btn menu-btn" type="button" aria-label="打开侧栏" aria-expanded="false" aria-controls="sidebar"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
         <button id="chooseModelBtn" class="current-context" type="button" title="切换平台或模型" aria-label="切换平台或模型">
-          <div id="currentProvider" class="eyebrow">等待配置</div>
-          <span class="model-heading"><strong id="currentModel">尚未选择模型</strong><span aria-hidden="true">⌄</span></span>
+          <span class="context-mark" aria-hidden="true">AI</span>
+          <span class="context-copy"><span id="currentProvider" class="eyebrow">等待配置</span><span class="model-heading"><strong id="currentModel">尚未选择模型</strong><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m6 8 4 4 4-4"/></svg></span></span>
         </button>
-        <div id="status" class="status"><span></span><b>初始化中</b></div>
-        <button id="usageBtn" class="usage-chip" type="button" aria-label="打开 Token 用量统计" title="Token 用量统计"><small>用量</small><b id="usageTopValue">0</b></button>
-        <button id="capabilityBtn" class="toolbar-btn" type="button" title="查看当前模型支持哪些能力">模型能力</button>
-        <button id="topSettingsBtn" class="toolbar-btn" type="button">平台设置</button>
+        <div class="topbar-tools">
+          <div id="status" class="status" role="status"><span aria-hidden="true"></span><b>初始化中</b></div>
+          <button id="usageBtn" class="usage-chip" type="button" aria-label="打开 Token 用量统计" title="Token 用量统计"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9M12 7v5l3 2M16.5 3.8 20 4l.2 3.5"/></svg><small>用量</small><b id="usageTopValue">0</b></button>
+          <button id="capabilityBtn" class="toolbar-btn" type="button" aria-label="模型能力" title="查看当前模型支持哪些能力"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m12 3 1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5L12 3ZM19 16l.7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7L19 16Z"/></svg><span>模型能力</span></button>
+          <button id="topSettingsBtn" class="toolbar-btn" type="button" aria-label="平台设置"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M10 14v6"/></svg><span>平台设置</span></button>
+        </div>
       </header>
 
-      <section id="chat" class="chat" aria-live="polite">
+      <section id="chat" class="chat" role="log" aria-label="对话消息" aria-live="polite" aria-relevant="additions">
         <div id="welcome" class="welcome">
+          <div class="welcome-aura" aria-hidden="true"><i></i><i></i></div>
           <div class="hero-mark" aria-hidden="true"><span>M</span></div>
-          <p class="kicker">ONE CLIENT · MANY MODELS</p>
-          <h2>把你的 API，变成好用的聊天界面</h2>
-          <p class="welcome-copy">密钥只留在本机。接入任意 OpenAI 兼容平台，自由切换供应商与模型。</p>
-          <div class="suggestions">
-            <button type="button">解释一个我一直没弄懂的概念</button>
-            <button type="button">帮我把想法整理成执行计划</button>
-            <button type="button">写一段清晰、有注释的代码</button>
-          </div>
-          <button id="welcomeSetupBtn" class="setup-link" type="button">＋ 添加第一个模型平台</button>
+          <p class="kicker">MODELBRIDGE · 本地 AI 工作台</p>
+          <h2>正在准备你的本地工作空间</h2>
+          <p class="welcome-copy">连接成功后，你可以在一个界面里使用和切换不同模型。</p>
+          <div class="welcome-trust"><span><i aria-hidden="true"></i>密钥仅存本机</span><span><i aria-hidden="true"></i>自由切换模型</span></div>
+          <button id="welcomeSetupBtn" class="setup-link" type="button" data-action="manage">＋ 添加第一个模型平台</button>
         </div>
       </section>
 
       <footer class="composer-wrap">
-        <div class="composer-context"><span id="composerHint" role="status">正在连接本地服务…</span><span class="keyboard-hint">Enter 发送 · Shift + Enter 换行</span></div>
         <div class="composer">
+          <div class="composer-context"><span id="composerHint" role="status">正在连接本地服务…</span><span class="keyboard-hint">Enter 发送 · Shift + Enter 换行</span></div>
           <div id="attachmentTray" class="attachment-tray" hidden aria-live="polite"></div>
           <div class="composer-row">
             <input id="fileInput" type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/*,.docx,.md,.json,.csv,.tsv,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.java,.c,.cpp,.h,.hpp,.cs,.go,.rs,.php,.rb,.swift,.kt,.kts,.vue,.svelte,.html,.css,.scss,.less,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.log,.sql,.sh,.bash,.zsh,.ps1,.bat,.cmd">
-            <button id="attachBtn" class="attach-btn" type="button" aria-label="添加附件" title="添加图片、PDF、DOCX、文本或代码文件">＋</button>
+            <button id="attachBtn" class="attach-btn" type="button" aria-label="添加附件" title="添加图片、PDF、DOCX、文本或代码文件"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 17 7.6-7.6a3 3 0 0 0-4.2-4.2L4.8 12.8a5 5 0 0 0 7.1 7.1l7.4-7.4"/></svg></button>
             <textarea id="input" rows="1" placeholder="写下你的问题，或添加文件一起聊…" aria-label="消息输入框" aria-describedby="composerHint"></textarea>
             <button id="sendBtn" class="send-btn" type="button" aria-label="发送消息"><span>↑</span></button>
           </div>
@@ -166,7 +165,7 @@
             <label class="field beginner-advanced"><span>Base URL</span><input id="baseUrl" type="url" spellcheck="false" placeholder="https://example.com/v1" required><small>只填写 Base URL，不要粘贴以 <code>/messages</code> 或 <code>/chat/completions</code> 结尾的完整接口地址</small></label>
 
             <div class="form-grid key-grid">
-              <label id="apiKeyField" class="field"><span>API Key</span><div class="password-wrap"><input id="apiKey" type="password" autocomplete="new-password" placeholder="粘贴 API Key"><button id="toggleKeyBtn" type="button" aria-label="显示或隐藏 API Key">显示</button></div><small id="apiKeyHint">只粘贴平台生成的 Key，不要粘贴说明文字</small></label>
+              <label id="apiKeyField" class="field"><span>API 密钥</span><div class="password-wrap"><input id="apiKey" type="password" autocomplete="new-password" placeholder="粘贴平台生成的 API Key"><button id="toggleKeyBtn" type="button" aria-label="显示或隐藏 API Key">显示</button></div><small id="apiKeyHint">仅保存在这台电脑上。只粘贴密钥本身，不要包含“API Key =”等说明文字。</small></label>
               <label class="field compact-field beginner-advanced"><span>认证方式</span><select id="authMode" class="select"><option value="bearer">Bearer Token</option><option value="x-api-key">x-api-key</option><option value="api-key">api-key</option><option value="custom">自定义请求头</option><option value="none">无需认证</option></select></label>
             </div>
 
@@ -191,7 +190,7 @@
             </details>
 
             <div id="diagnosticReport" class="diagnostic-report" hidden aria-live="polite"></div>
-            <p id="testCostNote" class="test-note">诊断会读取模型列表并要求模型只回复“OK”，通常只生成几个 Token；报告不会包含 API Key。</p>
+            <p id="testCostNote" class="test-note">诊断会读取模型列表并要求模型只回复“OK”，通常只生成几个 Token；报告不会包含 API 密钥。</p>
           </section>
 
           <section class="wizard-panel" data-wizard-panel="3" hidden>
@@ -283,7 +282,7 @@
   </div>
 
   <div id="backdrop" class="backdrop" hidden></div>
-  <div id="toastRegion" class="toast-region" aria-live="assertive"></div>
+  <div id="toastRegion" class="toast-region"></div>
   <script type="module" src="/web/app.js"></script>
 </body>
 </html>

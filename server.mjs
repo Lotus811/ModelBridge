@@ -15,7 +15,7 @@ import {createSseParser} from "./web/sse.js";
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(ROOT, "config.local.json");
 const LEGACY_CONFIG_PATH = path.join(ROOT, "api.txt");
-const APP_VERSION = "1.10.0";
+const APP_VERSION = "1.11.0";
 const CONFIG_VERSION = 1;
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_CONTEXT_TEXT_CHARS = 240_000;
@@ -1214,11 +1214,14 @@ async function readJson(req) {
     chunks.push(chunk);
   }
   if (!size) throw new Error("请求体为空");
+  let data;
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    data = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch {
     throw new Error("请求体不是有效 JSON");
   }
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("请求体必须是 JSON 对象");
+  return data;
 }
 
 function urlPort(url) {
@@ -1596,7 +1599,12 @@ export function createAppServer(options = {}) {
 
   const server = http.createServer(async (req, res) => {
     securityHeaders(res);
-    const requestUrl = new URL(req.url, `http://localhost:${port}`);
+    let requestUrl;
+    try {
+      requestUrl = new URL(req.url, `http://localhost:${port}`);
+    } catch {
+      return sendJson(res, 400, {error: {message: "请求地址格式不正确"}});
+    }
     const pathname = requestUrl.pathname;
     const address = server.address();
     const trustedPort = address && typeof address === "object" ? address.port : port;
@@ -1707,11 +1715,15 @@ export function createAppServer(options = {}) {
         return sendJson(res, 200, publicState(config));
       }
 
-      if (req.method === "POST" && pathname === "/api/chat") return handleChat(req, res, config, chatIdleTimeoutMs);
+      if (req.method === "POST" && pathname === "/api/chat") return await handleChat(req, res, config, chatIdleTimeoutMs);
       if (req.method === "GET") return serveStatic(pathname, res);
       return sendJson(res, 405, {error: {message: "不支持的请求方法"}});
     } catch (error) {
       console.error(error);
+      if (res.headersSent) {
+        if (!res.destroyed) res.end(`event: error\ndata: ${JSON.stringify({error: {message: "请求处理失败，请重试"}})}\n\n`);
+        return;
+      }
       return sendJson(res, 400, {error: {message: error.message || "请求失败"}});
     }
   });

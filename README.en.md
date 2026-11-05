@@ -2,12 +2,28 @@
 
 ModelBridge is a local-first, dependency-free chat client for OpenAI-compatible model APIs. Add an API key and Base URL in the browser, then switch between providers and models from one interface.
 
+## Preview
+
+These screenshots use a mock provider and demo conversations, with no real accounts or credentials.
+
+![ModelBridge desktop interface](docs/images/desktop.png)
+
+<details>
+<summary>Mobile interface</summary>
+
+<img src="docs/images/mobile.png" alt="ModelBridge mobile interface" width="320">
+
+</details>
+
+See the [UI design notes](docs/UI_DESIGN.md) and the [GitHub publishing guide](docs/PUBLISHING.md) (Chinese).
+
 ## Highlights
 
 - Multiple local provider profiles
 - Presets for Alibaba Cloud Model Studio, OpenAI, DeepSeek, OpenRouter, SiliconFlow, the Gemini/Claude compatibility layers, and Ollama
 - A three-step onboarding flow with a real minimal chat probe before saving
 - Separate conversation/model sidebar views, editable prompt starters, mobile drawer navigation, and keyboard focus management
+- A cohesive local-workspace visual system, layered top bar, floating composer, and more scannable message layout
 - Structured diagnostics for authentication, quota, networking, model discovery, streaming, token-limit parameters, and usage reporting
 - Automatic `/models` discovery with a manual model-list fallback
 - Standards-compliant SSE streaming, stop-button or `Esc` cancellation, reasoning display, and safe Markdown rendering
@@ -60,13 +76,15 @@ The message copy action writes both the original Markdown and rendered HTML when
 
 The streaming parser follows SSE event framing and handles arbitrary network chunk boundaries, BOMs, comments, `CR`/`LF`/`CRLF` line endings, and multiline `data` fields. While generation is active, use the stop button or press `Esc` when no modal is open; the browser aborts the upstream request and keeps content already received.
 
+If a network or provider error interrupts a reply, received text and reasoning are kept in history. The interface shows the error and offers continuation or regeneration. Manually stopped partial replies can also be continued; regeneration replaces the partial reply.
+
 Non-empty conversations are stored in the current browser's IndexedDB. The sidebar can search, rename, pin, and delete them, and the legacy `localStorage` conversation is migrated once. If IndexedDB is unavailable, ModelBridge falls back to the original single-conversation storage path. History never enters the backend configuration or leaves the browser.
 
 The “Conversation data” controls export a restorable JSON backup or a readable Markdown transcript. Importing JSON creates a new local conversation. Exports contain conversation text, provider/model identifiers, selected generation metadata, and attachment metadata only; they **never contain API keys, extra request headers, or image/PDF attachment bytes**. Reattach the original files if a restored conversation needs them again.
 
 ## Development
 
-Click the model name in the header to switch models. Starter cards fill an editable prompt before sending. Provider setup includes progress and cancellation, while technical diagnostic details and generation settings are collapsed by default.
+Click the model name in the header to switch models. Starter cards fill an editable prompt before sending. Provider setup includes progress and cancellation, while technical diagnostic details and generation settings are collapsed by default. The visual goals and acceptance constraints are captured in the [UI design notes](docs/UI_DESIGN.md).
 
 ```bash
 npm run check

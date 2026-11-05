@@ -9,6 +9,7 @@ config.local.json.*.tmp
 node_modules/
 coverage/
 .ui-artifacts/
+releases/
 .nyc_output/
 .DS_Store
 Thumbs.db
